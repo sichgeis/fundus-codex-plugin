@@ -4,6 +4,8 @@ This repository is the source of truth for the local `obsidian-wiki` Agent Skill
 
 The skill persists codebase knowledge into an Obsidian vault as per-repository wiki documents. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
 
+Existing wiki documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
+
 ## Layout
 
 - `SKILL.md`: agent-agnostic skill manifest and operating instructions.
@@ -83,6 +85,8 @@ Run:
 ```bash
 task verify
 ```
+
+This builds the package, checks the script entrypoint, and runs the unit tests.
 
 After installing, verify agent-specific installs with:
 

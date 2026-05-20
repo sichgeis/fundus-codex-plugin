@@ -44,6 +44,8 @@ Defaults installed with this skill:
 4. Decide whether to update or create.
 5. Write the final note content.
 
+Use full-document rewrite only when the existing note is stale enough that appending or replacing one section would leave misleading old content behind.
+
 ## Codex Permission Behavior
 
 When running under Codex, minimize approval prompts:
@@ -101,6 +103,15 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
   --content "Session handling details go here."
 ```
 
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
+  --path "Wiki/my-project/authentication-flow.md" \
+  --mode rewrite \
+  --content "## Overview
+
+Replace the full article body here."
+```
+
 ## Notes
 
 - `scan` returns JSON with titles, tags, and vault-relative paths.
@@ -108,6 +119,7 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
 - `read` returns the full Markdown document.
 - `create` fails if the slug already exists.
 - `update --mode replace` replaces the named heading section or creates it if missing.
+- `update --mode rewrite` replaces the full article body while preserving frontmatter.
 - All resolved paths are constrained to the configured vault root.
 - Writes are atomic to avoid partial documents.
 

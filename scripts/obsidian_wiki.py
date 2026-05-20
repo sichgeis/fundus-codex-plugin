@@ -425,10 +425,14 @@ def update_document(
     redacted_content = redact_secrets(new_content, config)
     if mode == "append":
         updated_body = append_body(body, redacted_content)
-    else:
+    elif mode == "replace":
         if not section:
             raise WikiError("--section is required when mode is replace.")
         updated_body = replace_section(body, section, redacted_content)
+    elif mode == "rewrite":
+        updated_body = redacted_content.strip()
+    else:
+        raise WikiError(f"Unknown update mode: {mode}")
 
     frontmatter["updated"] = now_iso()
     if not frontmatter.get("project"):
@@ -471,9 +475,9 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--content-file", help="Path to a markdown file containing the body content.")
     create_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
 
-    update_parser = subparsers.add_parser("update", help="Append to or replace a document section.")
+    update_parser = subparsers.add_parser("update", help="Append to, replace a section in, or rewrite a document.")
     update_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
-    update_parser.add_argument("--mode", required=True, choices=["append", "replace"], help="Update mode.")
+    update_parser.add_argument("--mode", required=True, choices=["append", "replace", "rewrite"], help="Update mode.")
     update_parser.add_argument("--section", help="Section heading to replace when using replace mode.")
     update_parser.add_argument("--content", help="Inline markdown content.")
     update_parser.add_argument("--content-file", help="Path to a markdown file containing the new content.")

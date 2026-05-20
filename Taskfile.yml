@@ -73,6 +73,7 @@ tasks:
       - test -f "{{.BUILD_DIR}}/commands/document.md"
       - test -f "{{.BUILD_DIR}}/commands/forge-document.md"
       - python "{{.BUILD_DIR}}/scripts/obsidian_wiki.py" --help
+      - python -m unittest discover -s tests
 
   verify:codex:
     desc: Verify the Codex installation

@@ -13,9 +13,10 @@ The script supports:
 - `scan`: list Markdown documents for the active project, optionally filtered by query terms.
 - `read`: print a vault-relative or absolute document path.
 - `create`: create a new Markdown document with frontmatter, title heading, tags, and redacted content.
-- `update`: append content or replace a named heading section.
+- `update`: append content, replace a named heading section, or rewrite the full article body.
 
 All writes go through `scripts/obsidian_wiki.py`; agents should not edit wiki documents directly.
+Use `update --mode rewrite` when a note is outdated enough that append or section replacement would preserve misleading stale content.
 
 ## Agent Package
 
