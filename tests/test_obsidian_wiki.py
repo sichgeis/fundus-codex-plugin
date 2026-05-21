@@ -72,6 +72,104 @@ class CreateDocumentTest(WikiTestCase):
         self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\nDetails")
 
 
+class IndexSearchTest(WikiTestCase):
+    def create_article(self, title: str, body: str, tags: list[str] | None = None) -> Path:
+        result = obsidian_wiki.create_document(self.config, "demo", title, body, tags)
+        return self.vault_path / result["path"]
+
+    def test_rebuild_index_includes_document_metadata_headings_and_excerpt(self) -> None:
+        self.create_article(
+            "Allow Full Wiki Article Rewrite",
+            "## Refined Ticket\n\nAllow replacing the complete article body.",
+            ["ticket"],
+        )
+
+        payload = obsidian_wiki.rebuild_index(self.config)
+
+        self.assertEqual(len(payload["documents"]), 1)
+        entry = payload["documents"][0]
+        self.assertEqual(entry["title"], "Allow Full Wiki Article Rewrite")
+        self.assertEqual(entry["project"], "demo")
+        self.assertIn("Refined Ticket", entry["headings"])
+        self.assertIn("article", entry["tokens"])
+        self.assertTrue((self.vault_path / "Wiki" / obsidian_wiki.INDEX_FILENAME).exists())
+
+    def test_scan_uses_index_for_body_and_heading_matches(self) -> None:
+        self.create_article(
+            "Allow Full Wiki Article Rewrite",
+            "## Refined Ticket\n\nAllow replacing the complete article body.",
+            ["ticket"],
+        )
+        obsidian_wiki.rebuild_index(self.config)
+
+        results = obsidian_wiki.scan_documents(self.config, "demo", "article body replace")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Allow Full Wiki Article Rewrite")
+        self.assertEqual(results[0]["reason"], "title,body")
+
+    def test_scan_matches_ticket_id_from_body(self) -> None:
+        self.create_article(
+            "LLM OCR Fallback Ticket",
+            "## Context\n\nImplement BACKEND-2242 page-aware retry budgets.",
+            ["ticket"],
+        )
+        obsidian_wiki.rebuild_index(self.config)
+
+        results = obsidian_wiki.scan_documents(self.config, "demo", "backend-2242")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "LLM OCR Fallback Ticket")
+        self.assertIn("ticket:BACKEND-2242", results[0]["reason"])
+
+    def test_create_refreshes_existing_index_entry(self) -> None:
+        obsidian_wiki.rebuild_index(self.config)
+
+        self.create_article("New Ticket", "## Context\n\nFresh indexed content.", ["ticket"])
+
+        results = obsidian_wiki.scan_documents(self.config, "demo", "fresh indexed")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "New Ticket")
+
+    def test_update_refreshes_existing_index_entry(self) -> None:
+        path = self.create_article("Existing Ticket", "## Context\n\nOld content.", ["ticket"])
+        obsidian_wiki.rebuild_index(self.config)
+
+        obsidian_wiki.update_document(
+            self.config,
+            "demo",
+            str(path.relative_to(self.vault_path)),
+            "append",
+            "## Follow Up\n\nNew searchable phrase.",
+            None,
+        )
+
+        results = obsidian_wiki.scan_documents(self.config, "demo", "searchable phrase")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Existing Ticket")
+
+    def test_index_status_reports_fresh_index(self) -> None:
+        self.create_article("Existing Ticket", "Body", ["ticket"])
+        obsidian_wiki.rebuild_index(self.config)
+
+        status = obsidian_wiki.index_status(self.config)
+
+        self.assertTrue(status["exists"])
+        self.assertTrue(status["valid"])
+        self.assertFalse(status["stale"])
+        self.assertEqual(status["documents"], 1)
+
+    def test_index_status_reports_changed_document_as_stale(self) -> None:
+        path = self.create_article("Existing Ticket", "Body", ["ticket"])
+        obsidian_wiki.rebuild_index(self.config)
+        path.write_text(path.read_text() + "\nChanged outside the tool.\n")
+
+        status = obsidian_wiki.index_status(self.config)
+
+        self.assertTrue(status["stale"])
+        self.assertEqual(status["stale_paths"], ["Wiki/demo/existing-ticket.md"])
+
+
 class UpdateDocumentTest(WikiTestCase):
     def write_article(self, body: str, frontmatter: str | None = None) -> None:
         metadata = frontmatter or "\n".join(

@@ -14,10 +14,25 @@ The script supports:
 - `read`: print a vault-relative or absolute document path.
 - `create`: create a new Markdown document with frontmatter, title heading, tags, and redacted content.
 - `update`: append content, replace a named heading section, or rewrite the full article body.
+- `index rebuild`: build a lightweight search index for all project wiki Markdown documents.
+- `index status`: report whether the index exists and has the expected document count.
+- `doctor`: print resolved project, configuration, vault, wiki, and index diagnostics.
 
 All writes go through `scripts/obsidian_wiki.py`; agents should not edit wiki documents directly.
 Create removes a duplicate leading H1 from supplied content when it matches the generated document title, so notes keep a single top-level title heading.
 Use `update --mode rewrite` when a note is outdated enough that append or section replacement would preserve misleading stale content.
+
+## Search Index
+
+The optional search index is stored at:
+
+```text
+{vault_path}/{wiki_dir}/.obsidian-wiki-index.json
+```
+
+Each entry stores compact metadata: vault-relative path, project, title, tags, updated timestamp, headings, a short excerpt, normalized lexical tokens, and ticket IDs such as `BACKEND-2242`. `scan --query` uses the index when present and falls back to direct project-folder Markdown scanning when absent.
+
+Successful `create` and `update` operations refresh only the affected index entry when an index already exists. They do not create the index implicitly; use `index rebuild` to opt into indexed search.
 
 ## Agent Package
 
@@ -46,6 +61,8 @@ Codex should run the installed script directly with this reusable command prefix
 ```text
 python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
+
+Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all obsidian-wiki skill calls" rule by itself. Approving the installed script prefix allows repeated `scan`, `read`, `create`, `update`, `index`, and `doctor` calls through that exact prefix without asking again.
 
 `SKILL.md` tells Codex to prefer inline `--content` for create and update operations. That keeps the workflow to a single Python command and avoids an extra approval for creating a temporary Markdown file. `--content-file` remains available for very large notes or content that is impractical to pass as one shell argument.
 

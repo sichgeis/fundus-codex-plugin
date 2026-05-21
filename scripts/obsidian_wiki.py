@@ -29,6 +29,10 @@ DEFAULT_CONFIG = {
         "patterns": ["API_KEY", "SECRET", "TOKEN", "PASSWORD"],
     },
 }
+INDEX_FILENAME = ".obsidian-wiki-index.json"
+INDEX_VERSION = 1
+MAX_INDEX_EXCERPT_CHARS = 600
+MAX_SCAN_RESULTS = 20
 
 
 class WikiError(Exception):
@@ -184,6 +188,14 @@ def wiki_project_dir(config: Config, project_name: str) -> Path:
     return ensure_within(config.vault_path, project_dir)
 
 
+def wiki_root_dir(config: Config) -> Path:
+    return ensure_within(config.vault_path, config.vault_path / config.wiki_dir)
+
+
+def index_path(config: Config) -> Path:
+    return ensure_within(config.vault_path, wiki_root_dir(config) / INDEX_FILENAME)
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -302,6 +314,157 @@ def load_document(path: Path, vault_root: Path) -> Document:
     )
 
 
+def tokenize(value: str) -> list[str]:
+    return [term.casefold() for term in re.findall(r"[A-Za-z0-9]+", value)]
+
+
+def extract_ticket_ids(value: str) -> list[str]:
+    ids: list[str] = []
+    for ticket_id in re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", value.upper()):
+        if ticket_id not in ids:
+            ids.append(ticket_id)
+    return ids
+
+
+def extract_headings(body: str) -> list[str]:
+    headings: list[str] = []
+    for line in body.splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            headings.append(match.group(1).strip())
+    return headings
+
+
+def make_excerpt(body: str) -> str:
+    text = re.sub(r"\s+", " ", body).strip()
+    return text[:MAX_INDEX_EXCERPT_CHARS]
+
+
+def index_entry_for_document(doc: Document) -> dict[str, Any]:
+    source_text = " ".join([doc.relative_path, doc.title, *doc.tags, *extract_headings(doc.body), doc.body])
+    return {
+        "path": doc.relative_path,
+        "project": doc.project,
+        "title": doc.title,
+        "tags": doc.tags,
+        "updated": doc.updated,
+        "headings": extract_headings(doc.body)[:20],
+        "excerpt": make_excerpt(doc.body),
+        "tokens": sorted(set(tokenize(source_text))),
+        "ticket_ids": extract_ticket_ids(source_text),
+        "mtime_ns": doc.path.stat().st_mtime_ns,
+    }
+
+
+def load_index(config: Config) -> dict[str, Any] | None:
+    path = index_path(config)
+    if not path.exists():
+        return None
+    data = load_json(path)
+    if data.get("version") != INDEX_VERSION or not isinstance(data.get("documents"), list):
+        return None
+    return data
+
+
+def write_index(config: Config, documents: list[dict[str, Any]]) -> dict[str, Any]:
+    payload = {
+        "version": INDEX_VERSION,
+        "generated": now_iso(),
+        "wiki_dir": config.wiki_dir,
+        "documents": sorted(documents, key=lambda doc: str(doc.get("path", ""))),
+    }
+    atomic_write(index_path(config), json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
+
+
+def rebuild_index(config: Config) -> dict[str, Any]:
+    root = wiki_root_dir(config)
+    documents: list[dict[str, Any]] = []
+    if root.exists():
+        for path in sorted(root.glob("*/*.md")):
+            doc = load_document(path, config.vault_path)
+            if not doc.project:
+                doc.project = path.parent.name
+            documents.append(index_entry_for_document(doc))
+    return write_index(config, documents)
+
+
+def refresh_index_entry(config: Config, path: Path) -> None:
+    existing_index = load_index(config)
+    if existing_index is None:
+        return
+
+    safe_path = ensure_within(config.vault_path, path)
+    relative_path = str(safe_path.relative_to(config.vault_path))
+    documents = [doc for doc in existing_index["documents"] if doc.get("path") != relative_path]
+    if safe_path.exists():
+        documents.append(index_entry_for_document(load_document(safe_path, config.vault_path)))
+    write_index(config, documents)
+
+
+def score_index_entry(entry: dict[str, Any], query: str | None) -> tuple[int, str]:
+    query_terms = tokenize(query or "")
+    query_ticket_ids = extract_ticket_ids(query or "")
+    if not query_terms and not query_ticket_ids:
+        return 1, "listed"
+
+    score = 0
+    reasons: list[str] = []
+    title_tokens = set(tokenize(str(entry.get("title", ""))))
+    tag_tokens = set(tokenize(" ".join(entry.get("tags") or [])))
+    filename_tokens = set(tokenize(str(entry.get("path", "")).rsplit("/", 1)[-1]))
+    heading_tokens = set(tokenize(" ".join(entry.get("headings") or [])))
+    body_tokens = set(entry.get("tokens") or [])
+    entry_ticket_ids = set(entry.get("ticket_ids") or [])
+
+    for ticket_id in query_ticket_ids:
+        if ticket_id in entry_ticket_ids:
+            score += 80
+            reasons.append(f"ticket:{ticket_id}")
+
+    for term in query_terms:
+        if term in title_tokens:
+            score += 20
+            reasons.append("title")
+        elif term in tag_tokens:
+            score += 14
+            reasons.append("tag")
+        elif term in filename_tokens:
+            score += 12
+            reasons.append("filename")
+        elif term in heading_tokens:
+            score += 8
+            reasons.append("heading")
+        elif term in body_tokens:
+            score += 3
+            reasons.append("body")
+
+    matched_terms = sum(1 for term in query_terms if term in body_tokens)
+    if query_terms and matched_terms == 0 and not query_ticket_ids:
+        return 0, ""
+    if len(query_terms) > 1 and matched_terms < max(1, len(query_terms) // 2) and not query_ticket_ids:
+        return 0, ""
+
+    reason = ",".join(dict.fromkeys(reasons)) or "match"
+    return score, reason
+
+
+def present_index_entry(entry: dict[str, Any], score: int | None = None, reason: str | None = None, include_snippet: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "path": entry.get("path"),
+        "title": entry.get("title"),
+        "tags": entry.get("tags") or [],
+        "updated": entry.get("updated"),
+    }
+    if score is not None:
+        payload["score"] = score
+    if reason:
+        payload["reason"] = reason
+    if include_snippet:
+        payload["snippet"] = entry.get("excerpt") or ""
+    return payload
+
+
 def resolve_doc_path(config: Config, path_arg: str) -> Path:
     raw_path = Path(path_arg).expanduser()
     if raw_path.is_absolute():
@@ -309,12 +472,32 @@ def resolve_doc_path(config: Config, path_arg: str) -> Path:
     return ensure_within(config.vault_path, config.vault_path / raw_path)
 
 
-def scan_documents(config: Config, project_name: str, query: str | None) -> list[dict[str, Any]]:
+def scan_documents(
+    config: Config,
+    project_name: str,
+    query: str | None,
+    limit: int = MAX_SCAN_RESULTS,
+    include_snippet: bool = False,
+) -> list[dict[str, Any]]:
+    existing_index = load_index(config)
+    if existing_index is not None:
+        matches: list[tuple[int, str, dict[str, Any]]] = []
+        for entry in existing_index["documents"]:
+            if entry.get("project") != project_name:
+                continue
+            score, reason = score_index_entry(entry, query)
+            if score <= 0:
+                continue
+            matches.append((score, reason, entry))
+
+        matches.sort(key=lambda item: (-item[0], str(item[2].get("title", ""))))
+        return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
+
     project_dir = wiki_project_dir(config, project_name)
     if not project_dir.exists():
         return []
 
-    query_terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_-]+", query or "")]
+    query_terms = tokenize(query or "")
     documents: list[dict[str, Any]] = []
 
     for path in sorted(project_dir.glob("*.md")):
@@ -331,7 +514,7 @@ def scan_documents(config: Config, project_name: str, query: str | None) -> list
             }
         )
 
-    return documents
+    return documents[:limit]
 
 
 def remove_duplicate_title_heading(body: str, title: str) -> str:
@@ -371,6 +554,7 @@ def create_document(config: Config, project_name: str, title: str, body: str, ex
     }
     content = render_document(frontmatter, redact_secrets(body, config))
     atomic_write(path, content)
+    refresh_index_entry(config, path)
     return {
         "path": str(path.relative_to(config.vault_path)),
         "title": title.strip(),
@@ -457,6 +641,7 @@ def update_document(
 
     rendered = f"{format_frontmatter(frontmatter)}\n\n{updated_body.strip()}\n"
     atomic_write(path, rendered)
+    refresh_index_entry(config, path)
     return {
         "path": str(path.relative_to(config.vault_path)),
         "title": frontmatter.get("title"),
@@ -473,13 +658,68 @@ def read_document(config: Config, path_arg: str) -> str:
     return path.read_text()
 
 
+def index_status(config: Config) -> dict[str, Any]:
+    path = index_path(config)
+    data = load_index(config)
+    root = wiki_root_dir(config)
+    markdown_paths = sorted(root.glob("*/*.md")) if root.exists() else []
+    markdown_count = len(markdown_paths)
+    indexed_count = len(data["documents"]) if data else 0
+    indexed_mtimes = {doc.get("path"): doc.get("mtime_ns") for doc in data["documents"]} if data else {}
+    stale_paths: list[str] = []
+    if data:
+        for markdown_path in markdown_paths:
+            relative_path = str(markdown_path.relative_to(config.vault_path))
+            if indexed_mtimes.get(relative_path) != markdown_path.stat().st_mtime_ns:
+                stale_paths.append(relative_path)
+        markdown_relative_paths = {str(markdown_path.relative_to(config.vault_path)) for markdown_path in markdown_paths}
+        for indexed_path in indexed_mtimes:
+            if indexed_path not in markdown_relative_paths:
+                stale_paths.append(str(indexed_path))
+    return {
+        "path": str(path.relative_to(config.vault_path)),
+        "exists": path.exists(),
+        "valid": data is not None,
+        "documents": indexed_count,
+        "markdown_documents": markdown_count,
+        "generated": data.get("generated") if data else None,
+        "stale": data is None or indexed_count != markdown_count or bool(stale_paths),
+        "stale_paths": stale_paths[:20],
+    }
+
+
+def doctor_report(config: Config, project_root: Path, project_name: str) -> dict[str, Any]:
+    root = wiki_root_dir(config)
+    project_dir = wiki_project_dir(config, project_name)
+    config_sources = [str(path) for path in project_config_paths(project_root) if path.exists()]
+    if SKILL_CONFIG_PATH.exists():
+        config_sources.append(str(SKILL_CONFIG_PATH))
+    if os.getenv("OBSIDIAN_VAULT_PATH"):
+        config_sources.append("OBSIDIAN_VAULT_PATH")
+
+    return {
+        "project_root": str(project_root),
+        "project": project_name,
+        "config_sources": config_sources,
+        "vault_path": str(config.vault_path),
+        "wiki_dir": config.wiki_dir,
+        "wiki_root": str(root),
+        "project_wiki_dir": str(project_dir),
+        "project_wiki_exists": project_dir.exists(),
+        "index": index_status(config),
+        "writes_possible": root.exists() or os.access(config.vault_path, os.W_OK),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage persistent Obsidian wiki documents for the active project.")
     parser.add_argument("--project", help="Override the auto-detected project name.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scan_parser = subparsers.add_parser("scan", help="List wiki documents for the active project.")
-    scan_parser.add_argument("--query", help="Optional keywords to filter by title, tags, or filename.")
+    scan_parser.add_argument("--query", help="Optional keywords to filter by indexed title, tags, filename, headings, and excerpt.")
+    scan_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum results to return. Default: {MAX_SCAN_RESULTS}.")
+    scan_parser.add_argument("--include-snippet", action="store_true", help="Include short indexed snippets in scan results.")
 
     read_parser = subparsers.add_parser("read", help="Read a wiki document.")
     read_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
@@ -497,6 +737,13 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--content", help="Inline markdown content.")
     update_parser.add_argument("--content-file", help="Path to a markdown file containing the new content.")
 
+    index_parser = subparsers.add_parser("index", help="Manage the lightweight wiki search index.")
+    index_subparsers = index_parser.add_subparsers(dest="index_command", required=True)
+    index_subparsers.add_parser("rebuild", help="Rebuild the wiki search index from Markdown documents.")
+    index_subparsers.add_parser("status", help="Report whether the wiki search index exists and is fresh.")
+
+    subparsers.add_parser("doctor", help="Show resolved project, configuration, vault, and index diagnostics.")
+
     return parser
 
 
@@ -512,7 +759,7 @@ def main() -> int:
         if args.command == "scan":
             payload = {
                 "project": project_name,
-                "documents": scan_documents(config, project_name, args.query),
+                "documents": scan_documents(config, project_name, args.query, args.limit, args.include_snippet),
             }
             print(json.dumps(payload, indent=2))
             return 0
@@ -531,6 +778,28 @@ def main() -> int:
             content = read_content_arg(args.content, args.content_file)
             payload = update_document(config, project_name, args.path, args.mode, content, args.section)
             print(json.dumps(payload, indent=2))
+            return 0
+
+        if args.command == "index":
+            if args.index_command == "rebuild":
+                payload = rebuild_index(config)
+                print(
+                    json.dumps(
+                        {
+                            "path": str(index_path(config).relative_to(config.vault_path)),
+                            "documents": len(payload["documents"]),
+                            "generated": payload["generated"],
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.index_command == "status":
+                print(json.dumps(index_status(config), indent=2))
+                return 0
+
+        if args.command == "doctor":
+            print(json.dumps(doctor_report(config, project_root, project_name), indent=2))
             return 0
 
         raise WikiError(f"Unknown command: {args.command}")

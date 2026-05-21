@@ -17,6 +17,7 @@ Use this skill when a user wants persistent repository knowledge written into th
 - Before creating a note, always scan the project wiki folder for possible matches.
 - If a likely match exists, read it before deciding whether to update or create.
 - Update existing notes automatically when they already cover the topic. Create a new note only when no good match exists.
+- Prefer indexed scan results when available. Rebuild the index with `index rebuild` when `index status` or `doctor` reports it as missing or stale.
 - Preserve concise, useful Markdown. The body is free-form, so choose headings and structure that fit the topic.
 - Created notes get a generated `# Title` heading. If create content already starts with the same H1, the tool removes that duplicate heading automatically.
 - Expect secret redaction to run automatically before content is written.
@@ -40,7 +41,7 @@ Defaults installed with this skill:
 ## Workflow
 
 1. Scan the current project's wiki pages.
-2. Match by title, tags, or filename.
+2. Match by title, tags, filename, headings, ticket IDs, and indexed excerpts.
 3. Read the best existing match when one exists.
 4. Decide whether to update or create.
 5. Write the final note content.
@@ -55,6 +56,7 @@ When running under Codex, minimize approval prompts:
 - Prefer `--content` for create and update operations so Codex can run one approved Python command without creating a temporary content file first.
 - Use `--content-file` only when inline shell quoting or command length makes `--content` impractical.
 - If Codex asks for command approval, allow the prefix `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py` for future runs.
+- Codex approvals are command-prefix based, not skill-name based. There is no separate skill-level whitelist in this repository; approving the installed script prefix covers scan, read, create, update, index, and doctor calls made through that prefix.
 
 ## Slash command workflow
 
@@ -72,6 +74,13 @@ Run the installed script from the project you want to document. Replace `/path/t
 
 ```bash
 python /path/to/obsidian-wiki/scripts/obsidian_wiki.py scan [--query "authentication flow"]
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py scan \
+  --query "BACKEND-2242 retry budget" \
+  --limit 5 \
+  --include-snippet
 ```
 
 ```bash
@@ -113,12 +122,28 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
 Replace the full article body here."
 ```
 
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py index rebuild
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py index status
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py doctor
+```
+
 ## Notes
 
-- `scan` returns JSON with titles, tags, and vault-relative paths.
+- `scan` returns compact JSON with titles, tags, vault-relative paths, updated timestamps, and indexed match scores/reasons when an index exists.
+- `scan` uses `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present and falls back to direct project Markdown scanning when absent.
+- `index rebuild` refreshes the lightweight search index from all project wiki Markdown documents.
+- `index status` and `doctor` help diagnose missing or stale indexes and resolved configuration.
 - The script detects the active project from the current working directory and its git root, unless `--project` is provided.
 - `read` returns the full Markdown document.
 - `create` fails if the slug already exists.
+- `create` and `update` refresh their affected index entry automatically when an index already exists.
 - `create` preserves one generated title H1 and removes a duplicate matching leading H1 from supplied content.
 - `update --mode replace` replaces the named heading section or creates it if missing.
 - `update --mode rewrite` replaces the full article body while preserving frontmatter.

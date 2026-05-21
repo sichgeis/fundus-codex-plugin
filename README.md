@@ -6,12 +6,13 @@ The skill persists codebase knowledge into an Obsidian vault as per-repository w
 
 Existing wiki documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
+Search is backed by a lightweight JSON index at `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body.
 
 ## Layout
 
 - `SKILL.md`: agent-agnostic skill manifest and operating instructions.
 - `commands/`: slash-command wrappers that invoke the skill from supported agents.
-- `scripts/obsidian_wiki.py`: deterministic scan/read/create/update tool for wiki documents.
+- `scripts/obsidian_wiki.py`: deterministic scan/read/create/update/index/doctor tool for wiki documents.
 - `config.json`: local default configuration used by the installed skill.
 - `config.example.json`: portable configuration template.
 - `docs/`: project documentation for maintainers.
@@ -77,7 +78,26 @@ For fast documentation runs in Codex, approve this command prefix when prompted:
 python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
 
+Codex approvals are command-prefix based, not skill-name based. There is no separate "allow this whole skill" switch in the skill itself. Approving the installed script prefix lets Codex reuse that approval for `scan`, `read`, `create`, `update`, `index`, and `doctor` calls that use the same command prefix.
+
 The skill instructions prefer inline `--content` for create and update operations, which avoids a separate temporary-file creation step. Use `--content-file` only for notes that are too large or awkward to quote inline.
+
+## Search Index
+
+Build or refresh the wiki search index with:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py index rebuild
+```
+
+Check index freshness and resolved paths with:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py index status
+python dist/obsidian-wiki/scripts/obsidian_wiki.py doctor
+```
+
+`scan --query` uses the index when it exists and falls back to direct Markdown scanning when it does not. Successful `create` and `update` operations refresh their affected index entry automatically if an index already exists.
 
 ## Verify
 
