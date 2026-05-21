@@ -74,13 +74,19 @@ The command files are thin wrappers. The actual wiki behavior remains governed b
 
 ## Codex Approvals
 
-Codex should run the installed script directly with this reusable command prefix:
+Codex should run the installed script directly with a reusable command prefix matching the Python command available in the agent environment:
+
+```text
+python3 /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
+```
+
+Use `python` instead when that is the command the agent will actually run:
 
 ```text
 python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
 
-Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all obsidian-wiki skill calls" rule by itself. The command allowlist is also separate from filesystem sandboxing: the helper can be an approved command and still need escalated sandbox permissions when it writes to an Obsidian vault outside the active workspace.
+Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all obsidian-wiki skill calls" rule by itself. The interpreter token is part of the matched prefix, so `python .../obsidian_wiki.py` and `python3 .../obsidian_wiki.py` need separate rules. The command allowlist is also separate from filesystem sandboxing: the helper can be an approved command and still need escalated sandbox permissions when it writes to an Obsidian vault outside the active workspace.
 
 The operational distinction matters:
 
@@ -93,11 +99,13 @@ For durable allowlisting, configure Codex Rules outside the skill, for example i
 
 ```starlark
 prefix_rule(
-    pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"],
+    pattern=["python3", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"],
     decision="allow",
     justification="Allow the vetted Obsidian wiki helper without repeated prompts",
 )
 ```
+
+For `python` environments, use the same rule with `pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"]`.
 
 This allowlist trusts commands that start with the matching script prefix. It does not inspect every file write, network call, or subprocess inside the Python process, so the helper should remain small, deterministic, and constrained to the configured vault.
 

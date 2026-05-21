@@ -72,18 +72,20 @@ Restart the target agent after installing or changing the skill so the skill man
 
 ## Codex Permissions
 
-For fast documentation runs in Codex, approve this command prefix when prompted:
+For fast documentation runs in Codex, approve the installed helper prefix that matches the Python command Codex will actually run:
 
 ```text
-python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
+python3 /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
+
+Use `python` instead of `python3` only when that is the command available in the agent environment.
 
 Codex has two separate gates:
 
 - Command approval: whether the proposed command is trusted.
 - Filesystem sandboxing: whether the command may write outside the active workspace.
 
-Codex approvals are command-prefix based, not skill-name based. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal wiki writes happen outside most repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
+Codex approvals are command-prefix based, not skill-name based. The interpreter token is part of that prefix: a rule for `python .../obsidian_wiki.py` does not match `python3 .../obsidian_wiki.py`. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal wiki writes usually happen outside repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
 
 Once the helper prefix is already allowlisted, routine wiki writes should not propose a fresh `prefix_rule`. If the Codex tool API still requires a `justification` for `sandbox_permissions=require_escalated`, keep that wording terse and operational rather than presenting it as another durable approval request. Only suggest the durable rule when the prefix is missing, the command is denied, or the command shape does not match the existing rule.
 
@@ -93,11 +95,13 @@ You can also ask the coding agent to add or update this allow rule for you. The 
 
 ```starlark
 prefix_rule(
-    pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"],
+    pattern=["python3", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"],
     decision="allow",
     justification="Allow the vetted Obsidian wiki helper without repeated prompts",
 )
 ```
+
+Use the same shape with `pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"]` if `python` is the command the agent will actually run.
 
 This trusts invocations of that helper script through the matching prefix; it is not a fine-grained audit of every file write or subprocess inside Python. Keep the helper small, deterministic, and path-constrained.
 
@@ -106,7 +110,7 @@ This rule covers the installed wiki helper only. It does not cover repository ma
 For Codex, keep the helper invocation itself simple so the prefix rule can match it. Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, and `archive candidates` do not need escalated sandbox permissions. Use inline `--content` only for short, simple, single-line content. For multiline or quote-heavy Markdown, write the body to a temporary file in a sandbox-writable location such as `/private/tmp`, then call the helper with `--content-file`:
 
 ```bash
-python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update \
+python3 /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update \
   --path "Wiki/my-project/authentication-flow.md" \
   --mode replace \
   --section "Session Handling" \

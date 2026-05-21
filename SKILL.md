@@ -67,18 +67,17 @@ Archived notes move to `Wiki/_archive/{project}/`, keep their content, and are e
 
 When running under Codex, minimize approval prompts:
 
-- Use the installed script path: `/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py`.
+- Run the installed script directly: `/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py`.
+- Pick the Python command the agent can actually run (`python` or `python3`) and keep it stable. Codex prefix rules include the interpreter token, so `python .../obsidian_wiki.py` and `python3 .../obsidian_wiki.py` are different command prefixes.
+- If the matching helper prefix is not already allowlisted, ask once for the narrow rule matching the actual command, for example `prefix_rule(pattern=["python3", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"], decision="allow", justification="Allow the vetted Obsidian wiki helper without repeated prompts")`.
 - Use `--content` only for short, simple, single-line content that does not need shell interpolation, command substitution, here-docs, or ANSI-C `$'...'` quoting.
-- Use `--content-file` for multiline, quote-heavy, or generated Markdown. Put the temporary file under a sandbox-writable location such as `/private/tmp`, then run a clean helper command like `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update --path ... --mode ... --content-file /private/tmp/note.md`.
+- Use `--content-file` for multiline, quote-heavy, or generated Markdown. Put the temporary file under a sandbox-writable location such as `/private/tmp`, then run a clean helper command like `python3 /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update --path ... --mode ... --content-file /private/tmp/note.md`.
 - Treat read-only helper calls (`scan`, `read`, `doctor`, `index status`, and `archive candidates`) as normal commands; do not request escalated sandbox permissions for them.
 - In Codex `workspace-write` sessions, the configured Obsidian vault is usually outside the writable workspace. For any helper command that creates, updates, archives, restores, cleans up, or rebuilds the index, run the exact installed helper command with `sandbox_permissions=require_escalated` instead of first trying an un-escalated write.
 - When the helper prefix is already allowlisted, do not pass a new `prefix_rule` for routine wiki commands. If the tool API requires a `justification` with `sandbox_permissions=require_escalated`, keep it terse and operational, and do not phrase it as a request for another durable rule.
 - Only suggest the durable prefix rule when the helper prefix is missing, the command was denied, or the command shape does not match the existing rule.
 - Keep escalated helper commands simple: no `/bin/zsh -lc`, no shell redirection, no heredocs, no command substitution, and no inline ANSI-C quoted multiline content. Those wrappers change the approved command prefix and can make Codex ask again.
-- If Codex asks for command approval, allow the prefix `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py` for future runs.
-- Codex approvals are command-prefix based, not skill-name based. There is no separate skill-level whitelist in this repository; durable allowlisting belongs in Codex Rules, for example `~/.codex/rules/default.rules`.
-- A suitable Codex Rule is `prefix_rule(pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"], decision="allow", justification="Allow the vetted Obsidian wiki helper without repeated prompts")`. Restart Codex after adding or changing rules.
-- Commands wrapped in shell features such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads may not match the durable prefix rule even when the underlying Python script is allowlisted.
+- Codex approvals are command-prefix based, not skill-name based. There is no separate skill-level whitelist in this repository; durable allowlisting belongs in Codex Rules, for example `~/.codex/rules/default.rules`. Restart Codex after adding or changing rules.
 - This helper rule does not cover maintenance commands such as `task install:codex` or direct writes to `~/.codex`; those require separate approval/rules and should not be part of normal wiki note creation or updates.
 - Treat such a rule as trust in this script invocation, not as fine-grained inspection of every internal Python file write or subprocess.
 

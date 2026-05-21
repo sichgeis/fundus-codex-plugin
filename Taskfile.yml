@@ -2,6 +2,8 @@ version: "3"
 
 vars:
   SKILL_NAME: obsidian-wiki
+  PYTHON:
+    sh: command -v python || command -v python3
   HOME_DIR:
     sh: printf %s "$HOME"
   BUILD_ROOT: dist
@@ -72,8 +74,8 @@ tasks:
       - test -f "{{.BUILD_DIR}}/scripts/obsidian_wiki.py"
       - test -f "{{.BUILD_DIR}}/commands/document.md"
       - test -f "{{.BUILD_DIR}}/commands/forge-document.md"
-      - python "{{.BUILD_DIR}}/scripts/obsidian_wiki.py" --help
-      - python -m unittest discover -s tests
+      - '"{{.PYTHON}}" "{{.BUILD_DIR}}/scripts/obsidian_wiki.py" --help'
+      - '"{{.PYTHON}}" -m unittest discover -s tests'
 
   verify:codex:
     desc: Verify the Codex installation
@@ -82,7 +84,7 @@ tasks:
       - test -f "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
       - test -f "{{.CODEX_PROMPTS_DIR}}/document.md"
-      - python "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help
+      - '"{{.PYTHON}}" "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help'
 
   verify:claude:
     desc: Verify the Claude Code installation
@@ -91,7 +93,7 @@ tasks:
       - test -f "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
       - test -f "{{.CLAUDE_COMMANDS_DIR}}/document.md"
-      - python "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help
+      - '"{{.PYTHON}}" "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help'
 
   verify:forge:
     desc: Verify the ForgeCode installation
@@ -100,4 +102,4 @@ tasks:
       - test -f "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
       - test -f "{{.AGENTS_COMMANDS_DIR}}/document.md"
-      - python "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help
+      - '"{{.PYTHON}}" "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help'
