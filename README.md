@@ -78,7 +78,12 @@ For fast documentation runs in Codex, approve this command prefix when prompted:
 python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
 
-Codex approvals are command-prefix based, not skill-name based. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration.
+Codex has two separate gates:
+
+- Command approval: whether the proposed command is trusted.
+- Filesystem sandboxing: whether the command may write outside the active workspace.
+
+Codex approvals are command-prefix based, not skill-name based. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal wiki writes happen outside most repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions; the durable prefix rule below is what lets those escalated helper calls proceed without a fresh approval prompt.
 
 To make the permission durable, add a Codex rule in `~/.codex/rules/default.rules` and restart Codex:
 
@@ -94,11 +99,13 @@ prefix_rule(
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py read",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py create",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py add-frontmatter",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index rebuild",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index status",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive candidates",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive apply",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive restore",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive status",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py doctor",
     ],
@@ -123,7 +130,7 @@ python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py upd
   --content-file /private/tmp/wiki-update.md
 ```
 
-Avoid wrapping wiki writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted.
+Avoid wrapping wiki writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted. If Codex is launched with `--add-dir /Users/christian/vault/Hypatos`, the vault is part of the writable sandbox and write commands may not need escalation; otherwise the exact allowlisted helper command should be escalated for writes.
 
 ## Search Index
 

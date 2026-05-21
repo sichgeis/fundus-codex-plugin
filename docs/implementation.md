@@ -80,7 +80,7 @@ Codex should run the installed script directly with this reusable command prefix
 python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
 ```
 
-Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all obsidian-wiki skill calls" rule by itself. For durable allowlisting, configure Codex Rules outside the skill, for example in `~/.codex/rules/default.rules`:
+Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all obsidian-wiki skill calls" rule by itself. The command allowlist is also separate from filesystem sandboxing: the helper can be an approved command and still need escalated sandbox permissions when it writes to an Obsidian vault outside the active workspace. For durable allowlisting, configure Codex Rules outside the skill, for example in `~/.codex/rules/default.rules`:
 
 ```starlark
 prefix_rule(
@@ -89,7 +89,18 @@ prefix_rule(
     justification = "Allow the vetted Obsidian wiki skill helper without repeated prompts",
     match = [
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py scan",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py read",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py create",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py add-frontmatter",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index rebuild",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index status",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive candidates",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive apply",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive restore",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive status",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py doctor",
     ],
     not_match = [
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/other.py",
@@ -100,6 +111,8 @@ prefix_rule(
 This allowlist trusts commands that start with the matching script prefix. It does not inspect every file write, network call, or subprocess inside the Python process, so the helper should remain small, deterministic, and constrained to the configured vault.
 
 `SKILL.md` tells Codex to keep the allowlisted helper invocation simple. Inline `--content` is appropriate for short, simple, single-line content. Multiline or quote-heavy Markdown should be passed with `--content-file` from a sandbox-writable temporary path such as `/private/tmp`. This avoids shell-heavy command shapes, including here-docs, `$'...'` strings, command substitutions, redirections, and long `/bin/zsh -lc ...` payloads. Those forms can fail Codex's conservative command-prefix matching even when the underlying Python helper prefix is allowlisted.
+
+In a normal `workspace-write` session, the repository is writable but `/Users/christian/vault/Hypatos` is not necessarily part of the sandbox. For commands that create, update, archive, restore, clean up, or rebuild the index, Codex should therefore invoke the exact installed helper command with escalated sandbox permissions. If the prefix rule above is loaded, the escalation should be covered by the existing approval and should not produce a new prompt. An alternative is launching Codex with `--add-dir /Users/christian/vault/Hypatos`, which makes the vault an explicit writable root for the session.
 
 The helper allowlist is separate from repository maintenance. Installing the source package with `task install`, `task install:codex`, `task install:claude`, or `task install:forge` writes outside the active workspace into agent configuration directories. Those commands need their own approval/rules and should only be run when the installed skill copy must be refreshed, not during routine wiki note writes.
 
