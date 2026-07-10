@@ -1,9 +1,9 @@
 # Fundus Agent Implementation Tracker
 
-Status: Fundus 0.2.2 correctness patch complete
+Status: Fundus 0.2.3 lean-area patch active
 Date: 2026-07-10
-Current iteration: P21-P22 complete
-First active phase: none
+Current iteration: P23-P24
+First active phase: P23
 
 ## Agent read order
 
@@ -67,7 +67,7 @@ The existing project already delivered substantial capabilities:
 | P9 | done | token/output footprint audit |
 | P10 | done | first-release workbench examples and polish |
 
-The historical implementation remains useful. P11-P20 hardened and evolved it rather than discarding it. P21-P22 are the next focused patch iteration.
+The historical implementation remains useful. P11-P20 hardened and evolved it rather than discarding it. P21-P22 completed the lossless-read patch. P23-P24 deliver the approved lean-area model, migrate the live Fundus vault, and release 0.2.3.
 
 ## Current findings inventory
 
@@ -130,8 +130,10 @@ Decisions for the next iteration:
 | P20 — Modularization, CI, and release readiness | done | medium | P13-P19 |
 | P21 — Lossless complete-note reads | done | critical | P17, P20 |
 | P22 — Fundus 0.2.2 release validation | done | high | P21 |
+| P23 — Lean content-driven areas and safe layout migration | in_progress | critical | P14, P16, P18 |
+| P24 — Live vault migration and Fundus 0.2.3 release | planned | critical | P23 |
 
-P21 and P22 are deliberately sequential. Complete P21 and its focused acceptance suite before changing the release version or installing the patch in P22.
+P23 and P24 are deliberately sequential. Complete and verify the migration engine on disposable vaults before creating a current live-vault backup or applying P24.
 
 ---
 
@@ -1245,6 +1247,88 @@ Package, install, and smoke-test the complete-read contract as Fundus 0.2.2 afte
 - Search ranking, proposal transport, and direct-edit timestamp behavior were not changed; the full regression suite remained green.
 - All release and host fixtures used temporary vaults under the system temporary directory. The live Hypatos Fundus corpus and its index were not read or written.
 - Residual risk: future hosts may choose different display budgets. The server-controlled bound, explicit continuation state, and version-bound restart behavior prevent silent completion assumptions; no release-blocking risk remains.
+
+---
+
+## P23 — Lean content-driven areas and safe layout migration
+
+Status: in_progress
+
+### Goal
+
+Replace eager universal area scaffolding with a content-driven layout and add a deterministic, proposal-first migration that safely rebases Markdown links when existing areas are simplified.
+
+### Product decisions
+
+- New areas contain their root and `overview.md` by default.
+- `index.md` and `log.md` are explicit opt-ins; existing curated files remain valid.
+- Typed concept notes live at the area root. Frontmatter type and tags carry classification.
+- Raw evidence uses `sources/` only when it improves navigation; the default threshold is three source documents.
+- The old seven-folder layout is a Fundus convention, not an Open Knowledge Format requirement. OKF permits producer-defined directories and optional index/log files.
+- Search ranking, direct-edit timestamps, and proposal-by-ID storage are outside this patch.
+
+### Required implementation
+
+- [ ] Make `area init` create only `overview.md` by default and add explicit `--with-index` and `--with-log` options.
+- [ ] Add deterministic `area layout plan` output with proposal ID, source/destination paths, source revisions, stable IDs, link rewrites, collisions, warnings, and policy metadata.
+- [ ] Add exact-proposal `area layout apply` with global locking, staleness/collision rejection, a verified current backup, mutation journaling, rollback, index rebuild, and corpus/link verification.
+- [ ] Rebase relative links inside moved documents and rewrite backlinks across all active Markdown while preserving labels, anchors, titles, and root-relative semantics.
+- [ ] Preserve stable IDs and body bytes for pure moves; preserve and rewrite curated area `index.md` and `log.md` files.
+- [ ] Remove only emptied legacy category directories after successful apply.
+- [ ] Cover deterministic plans, collisions, stale revisions, link variants, redirects, rollback checkpoints, index freshness, and idempotent re-planning with temporary-vault tests.
+- [ ] Update architecture, decision, target-picture, implementation, testing, CLI, workbench, README, and skill documentation.
+- [ ] Run focused tests and `task verify`; review the patch before marking P23 done.
+
+### Acceptance criteria
+
+- [ ] A new area is lean by default and optional reserved files remain available.
+- [ ] Planning never mutates the vault and identical state produces an identical proposal ID.
+- [ ] Apply accepts only the exact fresh proposal, creates a recoverable backup, and leaves no partial state on injected failure.
+- [ ] Successful migration introduces no new broken local Markdown links and preserves all active documents and stable IDs.
+- [ ] The full automated suite uses disposable vaults and passes.
+
+### Expected implementation surface
+
+```text
+scripts/fundus_core/runtime.py
+scripts/fundus_core/mcp_server.py
+scripts/fundus.py
+tests/
+SKILL.md
+README.md
+docs/
+```
+
+---
+
+## P24 — Live vault migration and Fundus 0.2.3 release
+
+Status: planned
+
+### Goal
+
+Use the verified proposal-first workflow to simplify the authorized live Fundus vault, curate the two complex epic areas, and ship the exact tested implementation as Fundus 0.2.3.
+
+### Required implementation
+
+- [ ] Record the final live inventory and deterministic proposal without mutating the vault.
+- [ ] Create and verify a new current backup immediately before apply.
+- [ ] Rehearse the exact structural policy and semantic consolidation rules against a disposable vault copy.
+- [ ] Apply the approved area matrix from `docs/area-layout-migration.md` through Fundus operations, never direct Markdown writes.
+- [ ] Consolidate the AI Agent Templates and Configuration Promotion epics without losing unique facts, provenance, stable links, or source material.
+- [ ] Verify active/archive counts, stable IDs, corpus invariants, search, index freshness, all rewritten links, and no newly broken local links.
+- [ ] Create or update the durable Fundus production note through proposal/apply and record backup, proposal, verification, and rollback evidence.
+- [ ] Update version and release notes to 0.2.3 only after the live migration succeeds.
+- [ ] Run `task verify`, build and inspect the package, install through the cache-buster workflow, and run a fresh-host smoke against a disposable vault.
+- [ ] Commit and push every stage, create and push annotated tag `v0.2.3`, and leave the dedicated branch clean and reviewable without merging it into `main`.
+
+### Acceptance criteria
+
+- [ ] The live vault matches the approved lean target matrix and retains all intended knowledge.
+- [ ] A verified pre-apply backup and an actionable rollback point exist.
+- [ ] Live corpus, index, search, and link checks pass after migration.
+- [ ] Source, build, marketplace, installed cache, MCP server info, README, and release notes all report 0.2.3.
+- [ ] The installed plugin passes the disposable-vault host smoke and the release branch/tag are pushed.
 
 ---
 
