@@ -32,6 +32,8 @@ SKILL.md
 agents/openai.yaml
 config.json
 config.example.json
+requirements.txt
+vendor/
 scripts/fundus.py
 scripts/fundus_mcp.py
 scripts/build_plugin_marketplace.py
@@ -129,19 +131,9 @@ Current writes do not carry an expected revision and there is no corpus lock. Co
 
 ### Current frontmatter behavior
 
-The current frontmatter implementation is a custom YAML-like parser. It supports basic scalar lines and indented lists.
+Fundus uses a pinned, vendored `ruamel.yaml==0.19.1` round-trip codec. It deliberately supports scalar values and lists of scalar values, preserves unknown supported keys and comments, quotes serialized values safely, and normalizes known list and timestamp fields through typed helpers.
 
-Known limits include:
-
-- quoted and multiline YAML,
-- inline lists,
-- nested values,
-- comments,
-- robust CRLF/BOM handling,
-- safe serializer quoting,
-- scalar/list type ambiguity.
-
-Unknown keys are retained in dictionary form when parsed successfully, but unsupported YAML may be reinterpreted or lost.
+Metadata-only changes preserve the decoded UTF-8 body exactly. LF, CRLF, and a leading BOM are retained. Unsupported nested values, custom tags, duplicate keys, non-string keys, malformed delimiters, and invalid UTF-8 fail with `FRONTMATTER_INVALID` instead of being reinterpreted. The full supported profile is documented in `docs/frontmatter-profile.md`.
 
 ### Current MCP behavior
 

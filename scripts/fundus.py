@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -11,12 +13,20 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 SCRIPT_PATH = Path(__file__).resolve()
 SKILL_DIR = SCRIPT_PATH.parent.parent
+VENDOR_DIR = SKILL_DIR / "vendor"
+if str(VENDOR_DIR) not in sys.path:
+    sys.path.insert(0, str(VENDOR_DIR))
+
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
+
 SKILL_CONFIG_PATH = SKILL_DIR / "config.json"
 PROJECT_CONFIG_RELATIVE_PATHS = [
     Path(".codex") / "fundus.json",
@@ -395,44 +405,16 @@ def migration_staging_root_dir(config: Config) -> Path:
     return ensure_within(config.vault_path, config.vault_path / MIGRATION_STAGING_DIRNAME)
 
 
-def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    if not text.startswith("---\n"):
-        return {}, text
-
-    parts = text.split("\n---\n", 1)
-    if len(parts) != 2:
-        return {}, text
-
-    raw_frontmatter = parts[0][4:]
-    body = parts[1]
-    data: dict[str, Any] = {}
-    current_list_key: str | None = None
-
-    for raw_line in raw_frontmatter.splitlines():
-        if not raw_line.strip():
-            continue
-        if raw_line.startswith("  - ") and current_list_key:
-            data.setdefault(current_list_key, []).append(raw_line[4:].strip())
-            continue
-        if ":" not in raw_line:
-            current_list_key = None
-            continue
-        key, value = raw_line.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if value == "":
-            data[key] = []
-            current_list_key = key
-        else:
-            data[key] = value
-            current_list_key = None
-
-    return data, body
-
-
-def format_frontmatter(data: dict[str, Any]) -> str:
-    lines = ["---"]
-    ordered_keys = [
+FRONTMATTER_LIST_FIELDS = {
+    "aliases",
+    "projects",
+    "repos",
+    "supersedes",
+    "tags",
+    "verified_against",
+}
+FRONTMATTER_TIMESTAMP_FIELDS = {"archived_at", "created", "last_verified", "timestamp", "updated"}
+FRONTMATTER_ORDER = [
         "type",
         "title",
         "description",
@@ -458,30 +440,119 @@ def format_frontmatter(data: dict[str, Any]) -> str:
         "moved_to",
         "supersedes",
         "tags",
-    ]
-    seen: set[str] = set()
+]
 
-    def append_value(key: str, value: Any) -> None:
-        seen.add(key)
-        if isinstance(value, list):
-            lines.append(f"{key}:")
-            for item in value:
-                lines.append(f"  - {item}")
-            return
-        if isinstance(value, bool):
-            value = str(value).lower()
-        if value is not None:
-            lines.append(f"{key}: {value}")
 
-    for key in ordered_keys:
-        value = data.get(key)
-        if value is not None:
-            append_value(key, value)
-    for key, value in data.items():
-        if key not in seen and value is not None:
-            append_value(key, value)
-    lines.append("---")
-    return "\n".join(lines)
+def frontmatter_yaml() -> YAML:
+    yaml = YAML(typ="rt")
+    yaml.allow_duplicate_keys = False
+    yaml.default_flow_style = False
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    return yaml
+
+
+def normalize_frontmatter_value(key: str, value: Any) -> Any:
+    if key in FRONTMATTER_LIST_FIELDS and not isinstance(value, list):
+        if value is None:
+            return []
+        if isinstance(value, (str, int, float, bool, date, datetime)):
+            value = [value]
+        else:
+            raise FundusError(f"Frontmatter field '{key}' must be a scalar or list of scalars.", "FRONTMATTER_INVALID")
+
+    if isinstance(value, list):
+        normalized_items: list[Any] = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple, set)) or not isinstance(item, (str, int, float, bool, date, datetime, type(None))):
+                raise FundusError(f"Frontmatter field '{key}' contains an unsupported nested value.", "FRONTMATTER_INVALID")
+            normalized_items.append(item.isoformat() if isinstance(item, (date, datetime)) else item)
+        return normalized_items
+    if isinstance(value, dict) or not isinstance(value, (str, int, float, bool, date, datetime, type(None))):
+        raise FundusError(f"Frontmatter field '{key}' contains an unsupported value.", "FRONTMATTER_INVALID")
+    if key in FRONTMATTER_TIMESTAMP_FIELDS and isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value
+
+
+def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    opening = re.match(r"\A(?P<bom>\ufeff?)---[ \t]*(?P<newline>\r\n|\n)", text)
+    if opening is None:
+        return {}, text
+
+    newline = opening.group("newline")
+    remainder = text[opening.end() :]
+    closing = re.search(r"(?m)^---[ \t]*(?:\r\n|\n|$)", remainder)
+    if closing is None:
+        raise FundusError("Frontmatter is missing its closing delimiter.", "FRONTMATTER_INVALID")
+    raw_frontmatter = remainder[: closing.start()]
+    body = remainder[closing.end() :]
+
+    try:
+        loaded = frontmatter_yaml().load(raw_frontmatter) if raw_frontmatter.strip() else CommentedMap()
+    except (YAMLError, ValueError, TypeError) as exc:
+        raise FundusError(f"Invalid YAML frontmatter: {exc}", "FRONTMATTER_INVALID") from exc
+    if loaded is None:
+        loaded = CommentedMap()
+    if not isinstance(loaded, CommentedMap):
+        raise FundusError("Frontmatter must be a YAML mapping.", "FRONTMATTER_INVALID")
+    for key in list(loaded):
+        if not isinstance(key, str) or not key.strip():
+            raise FundusError("Frontmatter keys must be non-empty strings.", "FRONTMATTER_INVALID")
+        loaded[key] = normalize_frontmatter_value(key, loaded[key])
+    loaded._fundus_newline = newline
+    loaded._fundus_bom = bool(opening.group("bom"))
+    return loaded, body
+
+
+def format_frontmatter(data: dict[str, Any]) -> str:
+    if isinstance(data, CommentedMap):
+        rendered_data = data
+    else:
+        rendered_data = CommentedMap()
+        for key in FRONTMATTER_ORDER:
+            if key in data:
+                rendered_data[key] = data[key]
+        for key, value in data.items():
+            if key not in rendered_data:
+                rendered_data[key] = value
+    for key in list(rendered_data):
+        rendered_data[key] = normalize_frontmatter_value(key, rendered_data[key])
+
+    newline = getattr(data, "_fundus_newline", "\n")
+    bom = "\ufeff" if getattr(data, "_fundus_bom", False) else ""
+    stream = io.StringIO()
+    if rendered_data:
+        frontmatter_yaml().dump(rendered_data, stream)
+        payload = stream.getvalue().replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+        if newline != "\n":
+            payload = payload.replace("\n", newline)
+        return f"{bom}---{newline}{payload}{newline}---"
+    return f"{bom}---{newline}---"
+
+
+def frontmatter_newline(data: dict[str, Any]) -> str:
+    return str(getattr(data, "_fundus_newline", "\n"))
+
+
+def normalize_line_endings(text: str, newline: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if newline == "\n" else normalized.replace("\n", newline)
+
+
+def clone_frontmatter(data: dict[str, Any]) -> dict[str, Any]:
+    cloned = copy.deepcopy(data)
+    for attribute in ("_fundus_newline", "_fundus_bom"):
+        if hasattr(data, attribute):
+            setattr(cloned, attribute, getattr(data, attribute))
+    return cloned
+
+
+def read_note_text(path: Path) -> str:
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FundusError(f"Fundus note is not valid UTF-8: {path}", "FRONTMATTER_INVALID") from exc
 
 
 def read_content_arg(content: str | None, content_file: str | None) -> str:
@@ -656,7 +727,7 @@ def inspect_backup(config: Config, backup_id: str) -> dict[str, Any]:
 
 def load_document(path: Path, vault_root: Path) -> Document:
     safe_path = ensure_within(vault_root, path)
-    text = safe_path.read_text()
+    text = read_note_text(safe_path)
     frontmatter, body = parse_frontmatter(text)
     try:
         relative_path = str(safe_path.relative_to(vault_root))
@@ -667,7 +738,7 @@ def load_document(path: Path, vault_root: Path) -> Document:
         relative_path=relative_path,
         title=str(frontmatter.get("title") or safe_path.stem.replace("-", " ").title()),
         project=str(frontmatter.get("project") or ""),
-        tags=list(frontmatter.get("tags") or []),
+        tags=frontmatter_list(frontmatter.get("tags")),
         created=frontmatter.get("created"),
         updated=frontmatter.get("updated"),
         body=body,
@@ -1265,7 +1336,7 @@ def update_document(
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
-    text = path.read_text()
+    text = read_note_text(path)
     frontmatter, body = parse_frontmatter(text)
     if not frontmatter:
         raise FundusError(f"Document is missing expected frontmatter: {path}")
@@ -1289,7 +1360,7 @@ def update_document(
         relative_path=str(path.relative_to(config.vault_path)),
         title=str(frontmatter.get("title") or path.stem.replace("-", " ").title()),
         project=str(frontmatter.get("project") or ""),
-        tags=list(frontmatter.get("tags") or []),
+        tags=frontmatter_list(frontmatter.get("tags")),
         created=frontmatter.get("created"),
         updated=frontmatter.get("updated"),
         body=body,
@@ -1316,7 +1387,7 @@ def update_document(
     if not frontmatter.get("tags"):
         frontmatter["tags"] = normalize_scope_tags(config, project_name, active_scope, [])
 
-    rendered = f"{format_frontmatter(frontmatter)}\n\n{updated_body.strip()}\n"
+    rendered = render_existing_document(frontmatter, updated_body)
     atomic_write(path, rendered)
     refresh_index_entry(config, path)
     return {
@@ -1332,7 +1403,7 @@ def read_document(config: Config, path_arg: str) -> str:
     path = resolve_fundus_note_path(config, path_arg)
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
-    return path.read_text()
+    return read_note_text(path)
 
 
 def filesystem_timestamp(path: Path) -> str:
@@ -1359,7 +1430,7 @@ def add_frontmatter_to_document(
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
-    text = path.read_text()
+    text = read_note_text(path)
     existing_frontmatter, body = parse_frontmatter(text)
     if existing_frontmatter:
         raise FundusError(f"Document already has frontmatter: {path.relative_to(config.vault_path)}")
@@ -1493,7 +1564,7 @@ def frontmatter_changes(before: dict[str, Any], after: dict[str, Any]) -> list[d
 
 
 def render_existing_document_preserving_body(frontmatter: dict[str, Any], body: str) -> str:
-    return f"{format_frontmatter(frontmatter)}\n{body}"
+    return f"{format_frontmatter(frontmatter)}{frontmatter_newline(frontmatter)}{body}"
 
 
 def normalize_frontmatter_for_path(
@@ -1509,7 +1580,7 @@ def normalize_frontmatter_for_path(
     if not safe_path.exists():
         raise FundusError(f"Document does not exist: {path}")
 
-    text = safe_path.read_text()
+    text = read_note_text(safe_path)
     frontmatter, body = parse_frontmatter(text)
     if not frontmatter and not add_missing:
         return {
@@ -1530,7 +1601,7 @@ def normalize_frontmatter_for_path(
     existing_tags = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
     project_for_tags = inferred_project or ""
 
-    normalized = dict(frontmatter)
+    normalized = clone_frontmatter(frontmatter)
     normalized["type"] = infer_doc_type_from_path(config, safe_path, frontmatter, active_scope)
     normalized["title"] = title
     normalized["description"] = str(normalized.get("description") or title).strip()
@@ -1734,7 +1805,11 @@ def archive_candidates_global(
 
 
 def render_existing_document(frontmatter: dict[str, Any], body: str) -> str:
-    return f"{format_frontmatter(frontmatter)}\n\n{body.strip()}\n"
+    newline = frontmatter_newline(frontmatter)
+    cleaned_body = normalize_line_endings(body.strip(), newline)
+    if not cleaned_body:
+        return f"{format_frontmatter(frontmatter)}{newline}"
+    return f"{format_frontmatter(frontmatter)}{newline}{newline}{cleaned_body}{newline}"
 
 
 def remove_empty_directory(directory: Path, protected_directories: set[Path]) -> bool:
@@ -1803,14 +1878,14 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
         raise FundusError(f"Archive destination already exists: {destination_path.relative_to(config.vault_path)}")
 
     timestamp = now_iso()
-    frontmatter = dict(doc.frontmatter)
+    frontmatter = clone_frontmatter(doc.frontmatter)
     frontmatter["updated"] = timestamp
     frontmatter["archived"] = True
     frontmatter["archived_at"] = timestamp
     frontmatter["archived_reason"] = reason or "archived"
     frontmatter["original_path"] = doc.relative_path
 
-    atomic_write(destination_path, render_existing_document(frontmatter, doc.body))
+    atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
     source_path.unlink()
     active_directory_removed = remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
     refresh_index_entry(config, source_path)
@@ -1843,13 +1918,13 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     if destination_path.exists():
         raise FundusError(f"Restore destination already exists: {original_path}")
 
-    frontmatter = dict(doc.frontmatter)
+    frontmatter = clone_frontmatter(doc.frontmatter)
     timestamp = now_iso()
     frontmatter["updated"] = timestamp
     for key in ["archived", "archived_at", "archived_reason", "original_path"]:
         frontmatter.pop(key, None)
 
-    atomic_write(destination_path, render_existing_document(frontmatter, doc.body))
+    atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
     archive_path.unlink()
     archive_directory_removed = remove_empty_directory(archive_path.parent, {fundus_archive_dir(config), fundus_root_dir(config)})
     refresh_index_entry(config, archive_path)
@@ -1957,7 +2032,7 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, destination_path)
     if leave_stub:
-        frontmatter = dict(doc.frontmatter)
+        frontmatter = clone_frontmatter(doc.frontmatter)
         frontmatter["updated"] = now_iso()
         frontmatter["moved_to"] = str(destination_path.relative_to(config.vault_path))
         stub_target = str(destination_path.relative_to(config.vault_path))
@@ -1967,7 +2042,7 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
         source_path.unlink()
         remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
     moved_doc = load_document(destination_path, config.vault_path)
-    moved_frontmatter = dict(moved_doc.frontmatter)
+    moved_frontmatter = clone_frontmatter(moved_doc.frontmatter)
     moved_frontmatter["updated"] = now_iso()
     moved_frontmatter["moved_from"] = doc.relative_path
     destination_fundus_relative = destination_path.relative_to(fundus_root_dir(config)).as_posix()
@@ -1983,7 +2058,7 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
             if not str(tag).startswith("project/") and not str(tag).startswith("area/")
         ]
         moved_frontmatter["tags"] = normalize_scope_tags(config, "", area_scope(destination_parent), existing_tags)
-    atomic_write(destination_path, render_existing_document(moved_frontmatter, moved_doc.body))
+    atomic_write(destination_path, render_existing_document_preserving_body(moved_frontmatter, moved_doc.body))
     refresh_index_entry(config, source_path)
     refresh_index_entry(config, destination_path)
     return {
@@ -2102,7 +2177,7 @@ def migration_plan(
 
     for source_path in sorted(source_root.rglob("*.md")):
         relative_path = source_path.relative_to(source_root)
-        frontmatter, _ = parse_frontmatter(source_path.read_text())
+        frontmatter, _ = parse_frontmatter(read_note_text(source_path))
         target_relative, archived, reserved = migration_destination_relative_path(relative_path, frontmatter)
         destination_path = str((Path(target_dir) / target_relative).as_posix())
         if destination_path in destination_paths:
@@ -2166,7 +2241,7 @@ def copy_migrated_document(
     reserved: bool,
     canonical_destination: str,
 ) -> None:
-    text = source_path.read_text()
+    text = read_note_text(source_path)
     if reserved:
         atomic_write(destination_path, render_reserved_without_frontmatter(text))
         return
@@ -2190,7 +2265,7 @@ def copy_migrated_document(
 
 
 def render_frontmatter_body(frontmatter: dict[str, Any], body: str) -> str:
-    return f"{format_frontmatter(frontmatter)}\n\n{body.lstrip()}"
+    return render_existing_document_preserving_body(frontmatter, body)
 
 
 def archive_original_path_for_destination(destination: str) -> str | None:
@@ -2209,7 +2284,7 @@ def repair_archive_original_paths(config: Config, target_dir: str) -> list[str]:
 
     repaired: list[str] = []
     for path in sorted(archive_root.rglob("*.md")):
-        frontmatter, body = parse_frontmatter(path.read_text())
+        frontmatter, body = parse_frontmatter(read_note_text(path))
         if not frontmatter:
             continue
         relative_to_root = path.relative_to(root).as_posix()
@@ -2261,7 +2336,7 @@ def verify_fundus_corpus(config: Config, destination_dir: str | None = None) -> 
             continue
         archived = relative_parts and relative_parts[0] == ARCHIVE_DIRNAME
         reserved = not archived and path.name in RESERVED_FILENAMES
-        frontmatter, _ = parse_frontmatter(path.read_text())
+        frontmatter, _ = parse_frontmatter(read_note_text(path))
         relative_path = str(path.relative_to(verify_config.vault_path))
 
         counts["markdown"] += 1

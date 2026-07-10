@@ -1,1 +1,2 @@
-# Fundus runtime is dependency-free. This file is kept for packaging symmetry.
+# Vendored into vendor/ so the packaged plugin works without a runtime install step.
+ruamel.yaml==0.19.1

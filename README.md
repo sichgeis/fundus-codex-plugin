@@ -2,7 +2,7 @@
 
 This repository is the source of truth for the local Codex `fundus` plugin.
 
-The plugin packages the `fundus` skill, a dependency-free local MCP server, and a deterministic CLI helper for typed Fundus tools. Fundus persists codebase knowledge into an Obsidian vault as per-repository documents and explicit cross-repository areas.
+The plugin packages the `fundus` skill, a self-contained local MCP server, and a deterministic CLI helper for typed Fundus tools. Fundus persists codebase knowledge into an Obsidian vault as per-repository documents and explicit cross-repository areas.
 
 Existing Fundus documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
@@ -26,7 +26,7 @@ The canonical live corpus is `/Users/christian/vault/Hypatos/Fundus`. The old `W
 - `scripts/fundus_mcp.py`: stdio MCP server exposing the same Fundus operations as typed tools.
 - `config.json`: local default configuration packaged with the skill runtime.
 - `config.example.json`: portable configuration template.
-- `requirements.txt`: dependency-free runtime marker kept for packaging symmetry.
+- `requirements.txt`: pinned runtime dependency declaration; the matching `ruamel.yaml` package is bundled under `vendor/`.
 - `docs/`: project documentation for maintainers.
 - `Taskfile.yml`: local development tasks.
 
@@ -37,6 +37,7 @@ The canonical live corpus is `/Users/christian/vault/Hypatos/Fundus`. The old `W
 - `docs/implementation.md`: current helper, MCP, packaging, permissions, and runtime notes. Update this when code behavior changes.
 - `docs/architecture-invariants.md`: normative safety, consistency, protocol, and packaging rules.
 - `docs/testing-and-validation.md`: phase-specific test strategy and release evidence requirements.
+- `docs/frontmatter-profile.md`: supported YAML frontmatter values, normalization, preservation, and rejection policy.
 - `docs/decision-record.md`: adopted product and architecture defaults for the remediation program.
 
 ## Build
@@ -99,7 +100,7 @@ The plugin includes a local stdio MCP server. Codex reads `.mcp.json` from the i
 
 The direct server map is one of the shapes documented for bundled Codex MCP servers. The server uses newline-delimited UTF-8 JSON-RPC on stdio, negotiates `2025-11-25` or `2025-06-18`, and requires the MCP initialization lifecycle before normal tool operations. Recoverable protocol and tool errors do not terminate the process.
 
-The server is self-contained and uses only the Python standard library plus the bundled Fundus helper. Check the built server with:
+The server is self-contained and uses the Python standard library, the bundled Fundus helper, and the vendored `ruamel.yaml` runtime. Check the built server with:
 
 ```bash
 python dist/fundus/scripts/fundus_mcp.py --check

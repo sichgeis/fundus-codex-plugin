@@ -40,6 +40,113 @@ class FundusTestCase(unittest.TestCase):
         return body.strip()
 
 
+class FrontmatterCodecTest(FundusTestCase):
+    def assert_semantic_round_trip(self, text: str) -> dict[str, object]:
+        frontmatter, body = fundus.parse_frontmatter(text)
+        rendered = fundus.render_existing_document_preserving_body(frontmatter, body)
+        reparsed, reparsed_body = fundus.parse_frontmatter(rendered)
+        self.assertEqual(dict(reparsed), dict(frontmatter))
+        self.assertEqual(reparsed_body, body)
+        return frontmatter
+
+    def test_supported_yaml_shapes_round_trip_semantically(self) -> None:
+        fixtures = [
+            "---\ntitle: Simple\ntags: ticket\n---\n\nBody\n",
+            "---\ntags: [ticket, 'quoted: value', \"hash # value\"]\naliases:\n  - one\n  - two\n---\n\nBody\n",
+            "---\ntitle: \"O'Reilly: #1\"\ndescription: |\n  First line\n  Second line\nunicode: Café 日本語\n---\n\nBody\n",
+            "---\nenabled: true\ndisabled: false\nempty: null\nobserved: 2026-07-10\nunknown_key: retained\n---\n\nBody\n",
+            "---\n---\nBody\n",
+        ]
+
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assert_semantic_round_trip(fixture)
+
+    def test_known_list_field_normalizes_scalar_to_list(self) -> None:
+        frontmatter = self.assert_semantic_round_trip("---\ntitle: Note\ntags: ticket\n---\nBody\n")
+
+        self.assertEqual(frontmatter["tags"], ["ticket"])
+
+    def test_generated_supported_values_round_trip(self) -> None:
+        scalar_values = [
+            "plain",
+            "colon: value",
+            "hash # value",
+            "apostrophe's and \"quotes\"",
+            "Café 日本語",
+            True,
+            False,
+            0,
+            42,
+            3.5,
+            None,
+        ]
+
+        for index, value in enumerate(scalar_values):
+            with self.subTest(index=index, value=value):
+                source = {"unknown_key": value, "tags": [value]}
+                rendered = fundus.render_existing_document(source, "Body")
+                parsed, body = fundus.parse_frontmatter(rendered)
+                rerendered = fundus.render_existing_document_preserving_body(parsed, body)
+                reparsed, reparsed_body = fundus.parse_frontmatter(rerendered)
+                self.assertEqual(dict(reparsed), dict(parsed))
+                self.assertEqual(reparsed_body, body)
+
+    def test_comments_and_unknown_keys_survive_metadata_render(self) -> None:
+        text = "---\n# document comment\ntitle: \"A: # value\" # inline comment\nunknown_key: keep-me\ntags: ticket\n---\n\nBody\n"
+        frontmatter, body = fundus.parse_frontmatter(text)
+        frontmatter["updated"] = "2026-07-10T12:00:00+02:00"
+
+        rendered = fundus.render_existing_document_preserving_body(frontmatter, body)
+        reparsed, _ = fundus.parse_frontmatter(rendered)
+
+        self.assertIn("# document comment", rendered)
+        self.assertIn("# inline comment", rendered)
+        self.assertEqual(reparsed["unknown_key"], "keep-me")
+        self.assertEqual(reparsed["title"], "A: # value")
+
+    def test_unsupported_yaml_fails_with_stable_error_code(self) -> None:
+        fixtures = [
+            "---\nnested:\n  child: value\n---\nBody\n",
+            "---\ntags:\n  - [nested, list]\n---\nBody\n",
+            "---\nvalue: !custom tagged\n---\nBody\n",
+            "---\ntitle: one\ntitle: two\n---\nBody\n",
+            "---\ntitle: missing close\nBody\n",
+        ]
+
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                with self.assertRaises(fundus.FundusError) as raised:
+                    fundus.parse_frontmatter(fixture)
+                self.assertEqual(raised.exception.code, "FRONTMATTER_INVALID")
+
+    def test_bom_crlf_normalization_preserves_body_bytes(self) -> None:
+        original = (
+            "\ufeff---\r\n"
+            "# preserved comment\r\n"
+            "title: Article\r\n"
+            "tags: ticket\r\n"
+            "unknown_key: \"value: # literal\"\r\n"
+            "---\r\n"
+            "\r\n# Article\r\n\r\nBody with trailing spaces.  \r\n"
+        )
+        self.path.write_bytes(original.encode("utf-8"))
+        _, original_body = fundus.parse_frontmatter(original)
+
+        result = fundus.normalize_frontmatter_for_path(self.config, self.path, apply=True)
+
+        rendered_bytes = self.path.read_bytes()
+        rendered = rendered_bytes.decode("utf-8")
+        frontmatter, rendered_body = fundus.parse_frontmatter(rendered)
+        self.assertTrue(result["body_unchanged"])
+        self.assertEqual(rendered_body.encode("utf-8"), original_body.encode("utf-8"))
+        self.assertTrue(rendered_bytes.startswith(b"\xef\xbb\xbf---\r\n"))
+        self.assertNotIn(b"\n", rendered_bytes.replace(b"\r\n", b""))
+        self.assertIn("# preserved comment", rendered)
+        self.assertEqual(frontmatter["unknown_key"], "value: # literal")
+        self.assertEqual(frontmatter["tags"], ["fundus", "project/demo", "ticket"])
+
+
 class CreateDocumentTest(FundusTestCase):
     def create_article(self, title: str, body: str) -> Path:
         result = fundus.create_document(self.config, "demo", title, body, None)
@@ -303,7 +410,7 @@ class ArchiveDocumentTest(FundusTestCase):
         self.assertTrue(archive_path.exists())
         self.assertEqual(result["path"], "Fundus/_archive/demo/old-ticket.md")
         frontmatter, body = fundus.parse_frontmatter(archive_path.read_text())
-        self.assertEqual(frontmatter["archived"], "true")
+        self.assertIs(frontmatter["archived"], True)
         self.assertEqual(frontmatter["archived_reason"], "superseded")
         self.assertEqual(frontmatter["original_path"], "Fundus/demo/old-ticket.md")
         self.assertIn("Body", body)

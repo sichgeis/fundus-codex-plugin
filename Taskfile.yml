@@ -30,6 +30,7 @@ tasks:
       - mkdir -p "{{.BUILD_DIR}}/docs/reference"
       - cp SKILL.md config.json requirements.txt "{{.BUILD_DIR}}/"
       - cp scripts/fundus.py scripts/fundus_mcp.py "{{.BUILD_DIR}}/scripts/"
+      - cp -R vendor "{{.BUILD_DIR}}/vendor"
       - cp agents/openai.yaml "{{.BUILD_DIR}}/agents/openai.yaml"
       - cp docs/reference/*.md "{{.BUILD_DIR}}/docs/reference/"
 
@@ -125,6 +126,8 @@ tasks:
       - test -f "{{.BUILD_DIR}}/docs/reference/fundus-workbench-examples.md"
       - test -f "{{.BUILD_DIR}}/scripts/fundus.py"
       - test -f "{{.BUILD_DIR}}/scripts/fundus_mcp.py"
+      - test -f "{{.BUILD_DIR}}/vendor/ruamel/yaml/__init__.py"
+      - test -f "{{.BUILD_DIR}}/vendor/ruamel_yaml-0.19.1.dist-info/licenses/LICENSE"
       - test -f "{{.PLUGIN_BUILD_DIR}}/.codex-plugin/plugin.json"
       - test -f "{{.PLUGIN_BUILD_DIR}}/.mcp.json"
       - test -f "{{.PLUGIN_BUILD_DIR}}/skills/{{.SKILL_NAME}}/SKILL.md"

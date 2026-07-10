@@ -106,8 +106,8 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | P12 — Fundus path safety and corpus invariants | done | critical | none |
 | P13 — Search consistency and index freshness | planned | critical | P12 |
 | P14 — Revisions, locking, and recoverable mutations | planned | critical | P12 |
-| P15 — Frontmatter correctness | ready | high | none |
-| P16 — Canonical scope and move semantics | planned | high | P12, P15 |
+| P15 — Frontmatter correctness | done | high | none |
+| P16 — Canonical scope and move semantics | ready | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | planned | high | P11 |
 | P18 — Proposal/apply, duplicates, and provenance | planned | high | P14, P17 |
 | P19 — Configuration, portability, and packaging | planned | high | P11 |
@@ -412,7 +412,7 @@ Prevent lost updates and index corruption and make multi-step file operations re
 
 ## P15 — Frontmatter correctness
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -432,27 +432,85 @@ Default direction: use a real, pinned YAML implementation. A strict custom subse
 
 ### Required implementation
 
-- [ ] Document the supported frontmatter model.
-- [ ] Parse booleans, lists, strings, dates, nulls, and unknown fields deliberately.
-- [ ] Normalize known fields through typed helpers.
-- [ ] Reject unsupported constructs explicitly.
-- [ ] Serialize values with correct quoting.
-- [ ] Preserve unknown supported keys.
-- [ ] Preserve note body bytes during metadata-only changes.
-- [ ] Support LF/CRLF and BOM according to a documented policy.
-- [ ] Fix scalar/list ambiguity such as `tags: ticket`.
-- [ ] Add corpus fixtures and property-style round-trip tests.
-- [ ] Update package dependencies and build tasks if required.
-- [ ] Update migration and normalization tests.
+- [x] Document the supported frontmatter model.
+- [x] Parse booleans, lists, strings, dates, nulls, and unknown fields deliberately.
+- [x] Normalize known fields through typed helpers.
+- [x] Reject unsupported constructs explicitly.
+- [x] Serialize values with correct quoting.
+- [x] Preserve unknown supported keys.
+- [x] Preserve note body bytes during metadata-only changes.
+- [x] Support LF/CRLF and BOM according to a documented policy.
+- [x] Fix scalar/list ambiguity such as `tags: ticket`.
+- [x] Add corpus fixtures and property-style round-trip tests.
+- [x] Update package dependencies and build tasks if required.
+- [x] Update migration and normalization tests.
 
 ### Acceptance criteria
 
-- [ ] Supported fixture values round trip semantically.
-- [ ] Unsupported YAML does not silently lose data.
-- [ ] Body preservation tests pass.
-- [ ] Existing live-corpus shapes are covered by sanitized fixtures.
-- [ ] Package installation includes required dependencies reliably.
-- [ ] `task verify` passes.
+- [x] Supported fixture values round trip semantically.
+- [x] Unsupported YAML does not silently lose data.
+- [x] Body preservation tests pass.
+- [x] Existing live-corpus shapes are covered by sanitized fixtures.
+- [x] Package installation includes required dependencies reliably.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Dependency decision:
+
+- Selected `ruamel.yaml==0.19.1`, a common round-trip YAML implementation distributed under the MIT license.
+- Vendored the pure-Python wheel payload and upstream license so the exact built skill and plugin require no network or package-install step.
+- Added about 1.4 MiB to the runtime artifact; source and built-package execution both load the vendored codec.
+
+Files changed:
+
+- `scripts/fundus.py`
+- `tests/test_fundus.py`
+- `requirements.txt`
+- `vendor/`
+- `Taskfile.yml`
+- `README.md`
+- `.codex-plugin/plugin.json`
+- `docs/frontmatter-profile.md`
+- `docs/implementation.md`
+- `docs/agent-implementation-tracker.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus
+# 70 tests passed
+
+task build
+python dist/fundus/scripts/fundus.py --help
+python dist/fundus/scripts/fundus_mcp.py --check
+# exact built package loaded successfully
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 98 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- The round-trip YAML codec handles quoted and multiline strings, scalar and block lists, booleans, nulls, numbers, dates, Unicode, comments, and unknown supported fields.
+- Known list fields deliberately normalize scalar values such as `tags: ticket` to one-item lists; known temporal fields normalize parsed dates to ISO metadata strings.
+- Nested collections, custom tags, duplicate keys, malformed delimiters, non-mapping roots, non-string keys, and invalid UTF-8 fail with `FRONTMATTER_INVALID`.
+- Metadata-only normalization preserves decoded body bytes, LF/CRLF convention, BOM, comments, trailing whitespace, and blank lines; output is reparsed before a write is accepted.
+- Archive, restore, move, migration, and normalization paths preserve round-trip metadata and exact existing bodies where the body is not intentionally changed.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- P16 owns one canonical scope classifier and first-class redirect semantics across all move directions.
+- P14 will add revision checks, locks, and recoverable multi-file mutation boundaries around these writes.
+
+Next phase:
+
+- P16 — Canonical scope and move semantics is ready.
 
 ---
 

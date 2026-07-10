@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Fundus",
     "shortDescription": "Search and curate durable work knowledge",
-    "longDescription": "Fundus gives Codex a local, explicit workbench for durable project, epic, domain, ticket, and architecture knowledge. It treats Fundus as evidence, keeps source code authoritative, and uses dependency-free MCP tools for search, save, update, migration, archive, and verification workflows.",
+    "longDescription": "Fundus gives Codex a local, explicit workbench for durable project, epic, domain, ticket, and architecture knowledge. It treats Fundus as evidence, keeps source code authoritative, and uses self-contained MCP tools for search, save, update, migration, archive, and verification workflows.",
     "developerName": "Christian",
     "category": "Productivity",
     "capabilities": [
