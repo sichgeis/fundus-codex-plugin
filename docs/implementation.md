@@ -216,6 +216,8 @@ Migration and verification enforce that rule.
 
 `propose_area_layout()` is a read-only deterministic planner for one area or all areas. It flattens the legacy structural categories to the logical area root and combines `interviews/` plus `references/` under `sources/` only when their area contains at least three raw documents. The proposal binds source revisions, stable IDs, exact destinations, rewritten content, collisions, and newly broken-link checks into one SHA-256 proposal ID.
 
+An optional curated manifest can override canonical destinations and declare absorption mappings. Absorptions do not delete their source; they redirect planned inbound links to an existing or concurrently moved canonical target so content can be merged through normal Fundus update proposals and the reviewed source can then be archived safely.
+
 `apply_area_layout_proposal()` regenerates the plan under the corpus lock and rejects any stale, tampered, colliding, or link-breaking state. Before writes it creates and checksum-verifies a full current backup. One mutation journal covers sources, destinations, backlinks, and the index. Pure moves retain exact bytes; touched Markdown links keep labels, anchors, and titles while relative paths are rebased from their final document location. Apply removes only emptied legacy directories, rebuilds the index, verifies the corpus, and rolls back all touched files on failure.
 
 ### Current scope move behavior

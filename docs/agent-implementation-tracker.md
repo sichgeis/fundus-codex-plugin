@@ -1321,9 +1321,9 @@ Use the verified proposal-first workflow to simplify the authorized live Fundus 
 
 ### Required implementation
 
-- [ ] Record the final live inventory and deterministic proposal without mutating the vault.
+- [x] Record the final live inventory and deterministic proposal without mutating the vault.
 - [ ] Create and verify a new current backup immediately before apply.
-- [ ] Rehearse the exact structural policy and semantic consolidation rules against a disposable vault copy.
+- [x] Rehearse the exact structural policy and semantic consolidation rules against a disposable vault copy.
 - [ ] Apply the approved area matrix from `docs/area-layout-migration.md` through Fundus operations, never direct Markdown writes.
 - [ ] Consolidate the AI Agent Templates and Configuration Promotion epics without losing unique facts, provenance, stable links, or source material.
 - [ ] Verify active/archive counts, stable IDs, corpus invariants, search, index freshness, all rewritten links, and no newly broken local links.
@@ -1339,6 +1339,16 @@ Use the verified proposal-first workflow to simplify the authorized live Fundus 
 - [ ] Live corpus, index, search, and link checks pass after migration.
 - [ ] Source, build, marketplace, installed cache, MCP server info, README, and release notes all report 0.2.3.
 - [ ] The installed plugin passes the disposable-vault host smoke and the release branch/tag are pushed.
+
+### Rehearsal evidence — 2026-07-10
+
+- Final curated proposal: `sha256:4579f48579e46ebb2f69a19eeb8b9a93d3d5044926bc5d3e3f41c035bbbcf1ee`.
+- Plan: 26 moves, four explicit absorptions, 25 rewritten documents, 103 link rewrites, zero collisions, zero warnings, and zero newly broken links.
+- Structural rehearsal created and checksum-verified a 220-file backup, preserved 18 pure moves byte-for-byte, kept all 219 Markdown documents, rebuilt a fresh index, and passed all corpus smoke searches.
+- Semantic rehearsal appended the complete, link-rebased bodies of the four absorbed notes through revision-bound Fundus update proposals, reviewed duplicate candidates explicitly, verified each target before archiving its source, and archived all four originals through Fundus.
+- Final rehearsal counts were 156 active, 63 archived, 32 reserved, and 124 active concepts. Corpus verification passed with no issues and the 219-document index was current.
+- AI Agent Templates ended with four canonical concept files (`overview.md`, `domain.md`, `implementation.md`, `sources.md`) plus its existing curated `index.md` and `log.md`. Configuration Promotion ended with three root concepts, five files under `sources/`, and its existing curated reserved files.
+- Active-link searches found no surviving link to an absorbed or superseded structural path. Provenance strings and stable IDs deliberately retain historical path vocabulary.
 
 ---
 

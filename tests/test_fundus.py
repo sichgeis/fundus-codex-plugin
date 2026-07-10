@@ -2350,6 +2350,59 @@ class AreaLayoutMigrationTest(FundusTestCase):
         self.assertFalse((self.vault_path / "Fundus" / "Epics" / "Lean Epic" / "story.md").exists())
         self.assertEqual(list((self.vault_path / "Fundus" / fundus.JOURNAL_DIRNAME).glob("*")), [])
 
+    def test_curated_manifest_moves_canonical_note_and_rewrites_absorbed_backlinks(self) -> None:
+        paths = self.prepare_linked_layout()
+        story_path = str(paths["story"].relative_to(self.vault_path))
+        source_path = str(paths["source"].relative_to(self.vault_path))
+        proposal = fundus.propose_area_layout(
+            self.config,
+            global_scope=True,
+            manifest={
+                "moves": {source_path: "Fundus/Epics/Lean Epic/sources.md"},
+                "absorptions": {story_path: "Fundus/Epics/Lean Epic/overview.md"},
+            },
+        )
+
+        self.assertEqual(proposal["absorption_count"], 1)
+        self.assertNotIn(story_path, {item["source"] for item in proposal["moves"]})
+        self.assertIn(
+            {"source": source_path, "destination": "Fundus/Epics/Lean Epic/sources.md"},
+            [
+                {"source": item["source"], "destination": item["destination"]}
+                for item in proposal["moves"]
+            ],
+        )
+        index_rewrites = [item for item in proposal["link_rewrites"] if item["document"].endswith("index.md")]
+        self.assertIn("overview.md", {item["to"] for item in index_rewrites})
+
+        applied = fundus.apply_area_layout_proposal(self.config, proposal)
+
+        self.assertEqual(applied["absorption_count"], 1)
+        self.assertTrue(paths["story"].exists())
+        self.assertTrue((self.vault_path / "Fundus" / "Epics" / "Lean Epic" / "sources.md").exists())
+        self.assertIn("[Story](overview.md)", paths["index"].read_text())
+
+    def test_curated_manifest_rejects_missing_sources_and_targets(self) -> None:
+        self.prepare_linked_layout()
+        with self.assertRaises(fundus.FundusError) as missing_source:
+            fundus.propose_area_layout(
+                self.config,
+                global_scope=True,
+                manifest={"moves": {"Fundus/Epics/Lean Epic/missing.md": "Fundus/Epics/Lean Epic/new.md"}},
+            )
+        self.assertEqual(missing_source.exception.code, "AREA_LAYOUT_MANIFEST_INVALID")
+
+        proposal = fundus.propose_area_layout(
+            self.config,
+            global_scope=True,
+            manifest={
+                "absorptions": {
+                    "Fundus/Epics/Lean Epic/stories/story.md": "Fundus/Epics/Lean Epic/missing.md"
+                }
+            },
+        )
+        self.assertEqual(proposal["collisions"][0]["reason"], "absorption_target_missing")
+
     def test_link_rewrite_fixture_preserves_markdown_semantics(self) -> None:
         current_files = {
             "Fundus/Epics/Lean Epic/stories/story.md",

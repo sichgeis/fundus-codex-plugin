@@ -207,6 +207,15 @@ python /path/to/fundus/scripts/fundus.py area layout plan --area "Epics/AI Agent
 
 The deterministic JSON proposal includes exact source/destination paths, revisions, stable IDs, link rewrites, collisions, warnings, and its integrity-bound proposal ID. Planning is read-only. Save and review the complete JSON, then apply that exact proposal:
 
+For deliberate consolidation, `--manifest-file` accepts an optional JSON object with `moves` and `absorptions` path mappings. A move selects a canonical destination; an absorption keeps its source in place for later archival but rewrites inbound links to the canonical target. Targets must already exist or be produced by the same proposal. This lets an agent merge content through normal Fundus update proposals and archive the fully absorbed sources only after equivalence review.
+
+```json
+{
+  "moves": {"Fundus/Epics/Example/domain-model/model.md": "Fundus/Epics/Example/domain.md"},
+  "absorptions": {"Fundus/Epics/Example/stories/map.md": "Fundus/Epics/Example/overview.md"}
+}
+```
+
 ```bash
 python /path/to/fundus/scripts/fundus.py area layout apply \
   --proposal-file /tmp/fundus-area-layout.json

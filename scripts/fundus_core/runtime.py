@@ -3616,13 +3616,43 @@ def rewrite_layout_links(
     return updated, rewrites, new_broken
 
 
-def propose_area_layout(config: Config, area: str | None = None, global_scope: bool = False) -> dict[str, Any]:
+def _area_layout_manifest_mapping(manifest: dict[str, Any] | None, key: str) -> dict[str, str]:
+    if manifest is None:
+        return {}
+    if set(manifest) - {"moves", "absorptions"}:
+        raise FundusError("Area-layout manifest contains unsupported fields.", "AREA_LAYOUT_MANIFEST_INVALID")
+    value = manifest.get(key, {})
+    if not isinstance(value, dict) or any(
+        not isinstance(source, str) or not source or not isinstance(destination, str) or not destination
+        for source, destination in value.items()
+    ):
+        raise FundusError(f"Area-layout manifest {key} must be a path mapping.", "AREA_LAYOUT_MANIFEST_INVALID")
+    return {source: value[source] for source in sorted(value)}
+
+
+def propose_area_layout(
+    config: Config,
+    area: str | None = None,
+    global_scope: bool = False,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if global_scope == bool(area):
         raise FundusError("Choose exactly one of an explicit area or global scope.", "AREA_LAYOUT_SCOPE_INVALID")
     selected_area = area_scope(area).path if area else None
     root = fundus_root_dir(config)
     files = active_fundus_files(config)
     markdown_paths = [path for path in files if path.suffix.lower() == ".md"]
+    current_file_paths = {str(path.relative_to(config.vault_path)) for path in files}
+    explicit_moves = _area_layout_manifest_mapping(manifest, "moves")
+    absorptions = _area_layout_manifest_mapping(manifest, "absorptions")
+    if set(explicit_moves) & set(absorptions):
+        raise FundusError("A manifest source cannot be both moved and absorbed.", "AREA_LAYOUT_MANIFEST_INVALID")
+    unknown_sources = (set(explicit_moves) | set(absorptions)) - set(current_file_paths)
+    if unknown_sources:
+        raise FundusError(
+            f"Area-layout manifest sources do not exist: {sorted(unknown_sources)}",
+            "AREA_LAYOUT_MANIFEST_INVALID",
+        )
     raw_counts: dict[str, int] = {}
     for path in markdown_paths:
         parts = path.relative_to(root).parts
@@ -3632,20 +3662,37 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
 
     move_candidates: list[tuple[Path, Path]] = []
     for path in markdown_paths:
+        path_key = str(path.relative_to(config.vault_path))
         parts = path.relative_to(root).parts
         path_area = "/".join(parts[:2]) if len(parts) >= 2 and parts[0] in AREA_ROOT_DIRNAMES else None
         if selected_area and path_area != selected_area:
             continue
-        destination = area_layout_destination(config, path, raw_counts)
+        if path_key in absorptions:
+            continue
+        if path_key in explicit_moves:
+            destination = _area_layout_path(config, explicit_moves[path_key])
+        else:
+            destination = area_layout_destination(config, path, raw_counts)
         if destination is not None and destination != path:
             move_candidates.append((path, destination))
+
+    selected_sources = {
+        str(path.relative_to(config.vault_path))
+        for path in markdown_paths
+        if not selected_area or "/".join(path.relative_to(root).parts[:2]) == selected_area
+    }
+    out_of_scope_sources = (set(explicit_moves) | set(absorptions)) - selected_sources
+    if out_of_scope_sources:
+        raise FundusError(
+            f"Area-layout manifest sources are outside the selected scope: {sorted(out_of_scope_sources)}",
+            "AREA_LAYOUT_MANIFEST_INVALID",
+        )
 
     source_paths = {str(source.relative_to(config.vault_path)) for source, _ in move_candidates}
     destination_sources: dict[str, list[str]] = {}
     for source, destination in move_candidates:
         destination_key = str(destination.relative_to(config.vault_path))
         destination_sources.setdefault(destination_key, []).append(str(source.relative_to(config.vault_path)))
-    current_file_paths = {str(path.relative_to(config.vault_path)) for path in files}
     collisions: list[dict[str, Any]] = []
     for destination, sources in sorted(destination_sources.items()):
         if len(sources) > 1:
@@ -3658,10 +3705,21 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
         for source, destination in move_candidates
     }
     final_file_paths = (current_file_paths - set(move_map)) | set(move_map.values())
+    invalid_absorption_targets = sorted(target for target in absorptions.values() if target not in final_file_paths)
+    for target in invalid_absorption_targets:
+        collisions.append(
+            {
+                "destination": target,
+                "sources": sorted(source for source, destination in absorptions.items() if destination == target),
+                "reason": "absorption_target_missing",
+            }
+        )
+    link_map = {**move_map, **absorptions}
     moves: list[dict[str, Any]] = []
     rewrites: list[dict[str, Any]] = []
     all_link_rewrites: list[dict[str, Any]] = []
     new_broken_links: list[dict[str, Any]] = []
+    absorption_records: list[dict[str, Any]] = []
     for source, destination in sorted(move_candidates, key=lambda item: str(item[0])):
         doc = load_document(source, config.vault_path)
         moves.append(
@@ -3669,6 +3727,18 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
                 "source": str(source.relative_to(config.vault_path)),
                 "destination": str(destination.relative_to(config.vault_path)),
                 "expected_revision": path_revision(source),
+                "stable_id": doc.frontmatter.get("id"),
+            }
+        )
+
+    for source, target in absorptions.items():
+        source_path = _area_layout_path(config, source)
+        doc = load_document(source_path, config.vault_path)
+        absorption_records.append(
+            {
+                "source": source,
+                "target": target,
+                "expected_revision": path_revision(source_path),
                 "stable_id": doc.frontmatter.get("id"),
             }
         )
@@ -3682,7 +3752,7 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
             content,
             path_key,
             final_path,
-            move_map,
+            link_map,
             current_file_paths,
             final_file_paths,
         )
@@ -3703,7 +3773,9 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
         "policy_version": AREA_LAYOUT_POLICY_VERSION,
         "source_threshold": AREA_LAYOUT_SOURCE_THRESHOLD,
         "selection": {"global": global_scope, "area": selected_area},
+        "manifest": {"moves": explicit_moves, "absorptions": absorptions},
         "moves": moves,
+        "absorptions": absorption_records,
         "rewrites": rewrites,
         "collisions": collisions,
         "new_broken_links": new_broken_links,
@@ -3714,9 +3786,11 @@ def propose_area_layout(config: Config, area: str | None = None, global_scope: b
         "proposal_id": proposal_digest("area-layout", request),
         "request": request,
         "move_count": len(moves),
+        "absorption_count": len(absorption_records),
         "rewrite_document_count": len(rewrites),
         "link_rewrite_count": len(all_link_rewrites),
         "moves": moves,
+        "absorptions": absorption_records,
         "link_rewrites": all_link_rewrites,
         "collisions": collisions,
         "new_broken_links": new_broken_links,
@@ -3746,6 +3820,7 @@ def apply_area_layout_proposal(config: Config, proposal: dict[str, Any]) -> dict
         config,
         str(selection["area"]) if selection.get("area") else None,
         bool(selection.get("global")),
+        dict(request.get("manifest") or {}),
     )
     if regenerated["proposal_id"] != proposal["proposal_id"]:
         raise FundusError("Area-layout proposal no longer matches current state.", "REVISION_CONFLICT")
@@ -3755,6 +3830,7 @@ def apply_area_layout_proposal(config: Config, proposal: dict[str, Any]) -> dict
         raise FundusError("Area-layout proposal would introduce broken local links.", "AREA_LAYOUT_LINK_INVALID")
 
     moves = list(request.get("moves") or [])
+    absorptions = list(request.get("absorptions") or [])
     rewrites = list(request.get("rewrites") or [])
     move_by_source = {str(item["source"]): item for item in moves}
     rewrite_by_source = {str(item["source"]): item for item in rewrites}
@@ -3771,6 +3847,10 @@ def apply_area_layout_proposal(config: Config, proposal: dict[str, Any]) -> dict
         assert_expected_revision(source, str(item["expected_revision"]))
         touched_paths.add(source)
         touched_paths.add(_area_layout_path(config, str(item["destination"])))
+    for item in absorptions:
+        source = _area_layout_path(config, str(item["source"]))
+        assert_expected_revision(source, str(item["expected_revision"]))
+        touched_paths.add(source)
 
     backup = create_backup(config, f"pre-area-layout-{str(proposal['proposal_id']).split(':')[-1][:12]}")
     backup_verification = verify_backup(config, str(backup["id"]))
@@ -3827,6 +3907,7 @@ def apply_area_layout_proposal(config: Config, proposal: dict[str, Any]) -> dict
         "proposal_id": proposal["proposal_id"],
         "applied": True,
         "move_count": len(moves),
+        "absorption_count": len(absorptions),
         "pure_move_count": pure_move_count,
         "rewrite_document_count": len(rewrites),
         "link_rewrite_count": regenerated["link_rewrite_count"],
@@ -4668,6 +4749,10 @@ def build_parser() -> argparse.ArgumentParser:
     area_layout_plan_parser = area_layout_subparsers.add_parser("plan", help="Create a deterministic layout proposal without writing.")
     area_layout_plan_parser.add_argument("--area", help="Limit the plan to one explicit Fundus area.")
     area_layout_plan_parser.add_argument("--global", dest="global_scope", action="store_true", help="Plan across all Fundus areas.")
+    area_layout_plan_parser.add_argument(
+        "--manifest-file",
+        help="Optional JSON with explicit move and absorption path mappings for curated consolidation.",
+    )
     area_layout_apply_parser = area_layout_subparsers.add_parser("apply", help="Apply one exact fresh layout proposal.")
     area_layout_apply_parser.add_argument("--proposal-file", required=True, help="JSON proposal emitted by area layout plan.")
 
@@ -4977,7 +5062,8 @@ def main() -> int:
                 return 0
             if args.area_command == "layout":
                 if args.area_layout_command == "plan":
-                    print(json.dumps(propose_area_layout(config, args.area, args.global_scope), indent=2))
+                    manifest = load_json(Path(args.manifest_file)) if args.manifest_file else None
+                    print(json.dumps(propose_area_layout(config, args.area, args.global_scope, manifest), indent=2))
                     return 0
                 if args.area_layout_command == "apply":
                     print(json.dumps(apply_area_layout_proposal(config, load_json(Path(args.proposal_file))), indent=2))
