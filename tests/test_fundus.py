@@ -850,9 +850,45 @@ class NormalizeFrontmatterTest(FundusTestCase):
         frontmatter, _ = fundus.parse_frontmatter(path.read_text())
         self.assertEqual(frontmatter["type"], "Reference")
         self.assertEqual(frontmatter["scope"], "area")
-        self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates/references")
+        self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates")
         self.assertNotIn("project", frontmatter)
-        self.assertEqual(frontmatter["tags"], ["fundus", "area/epics/ai-agent-templates/references", "architecture"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "area/epics/ai-agent-templates", "architecture"])
+
+    def test_normalize_frontmatter_dry_run_identifies_subfolder_scope_overload(self) -> None:
+        path = self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / "references" / "source.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "---\n"
+            "type: Reference\n"
+            "title: Source\n"
+            "description: Source\n"
+            "id: epic/ai-agent-templates/source\n"
+            "scope: area\n"
+            "scope_path: Epics/AI Agent Templates/references\n"
+            "tags: [fundus, area/epics/ai-agent-templates/references, source]\n"
+            "---\n\n# Source\n\nBody\n"
+        )
+        original = path.read_text()
+
+        plan = fundus.normalize_frontmatter_paths(
+            self.config,
+            "demo",
+            fundus.area_scope("Epics/AI Agent Templates"),
+            str(path.relative_to(self.vault_path)),
+        )
+
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(plan["scope_path_change_count"], 1)
+        self.assertEqual(
+            plan["documents"][0]["scope_path_change"],
+            {
+                "before": "Epics/AI Agent Templates/references",
+                "after": "Epics/AI Agent Templates",
+                "reason": "physical_subfolder_overload",
+            },
+        )
+        self.assertEqual(plan["documents"][0]["physical_parent"], "Epics/AI Agent Templates/references")
+        self.assertEqual(plan["documents"][0]["scope_relative_path"], "references/source.md")
 
     def test_normalize_frontmatter_can_add_missing_frontmatter_when_explicit(self) -> None:
         self.path.write_text("# Plain Note\n\nBody\n")
@@ -1043,7 +1079,7 @@ class MigrationTest(FundusTestCase):
 
 class ScopeAndAreaTest(FundusTestCase):
     def test_area_path_validation_rejects_unsafe_paths(self) -> None:
-        for area in ["", "../Other", "/absolute", "_archive/old", ".fundus-backups/x"]:
+        for area in ["", "../Other", "/absolute", "_archive/old", ".fundus-backups/x", "Epics/Name/subfolder"]:
             with self.subTest(area=area):
                 with self.assertRaises(fundus.FundusError):
                     fundus.area_scope(area)
@@ -1146,6 +1182,135 @@ class ScopeAndAreaTest(FundusTestCase):
         self.assertEqual(frontmatter["scope"], "area")
         self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates")
         self.assertNotIn("project", frontmatter)
+
+    def test_move_matrix_preserves_id_and_reclassifies_scope(self) -> None:
+        epic = fundus.area_scope("Epics/AI Agent Templates")
+        domain = fundus.area_scope("Domains/Prompt Authoring")
+        cases = [
+            ("project-same", fundus.project_scope("demo"), "Fundus/demo/research/project-same.md", "project", "demo", "demo"),
+            ("project-other", fundus.project_scope("demo"), "Fundus/other/project-other.md", "project", "other", "other"),
+            ("project-area", fundus.project_scope("demo"), "Fundus/Epics/AI Agent Templates/references/project-area.md", "area", epic.path, None),
+            ("area-same", epic, "Fundus/Epics/AI Agent Templates/stories/area-same.md", "area", epic.path, None),
+            ("area-other", epic, "Fundus/Domains/Prompt Authoring/references/area-other.md", "area", domain.path, None),
+            ("area-project", epic, "Fundus/demo/research/area-project.md", "project", "demo", "demo"),
+        ]
+        fundus.rebuild_index(self.config)
+
+        for name, source_scope, destination, expected_kind, expected_scope_path, expected_project in cases:
+            with self.subTest(name=name):
+                title = name.replace("-", " ").title()
+                created = fundus.create_document(
+                    self.config,
+                    source_scope.path if source_scope.kind == "project" else "demo",
+                    title,
+                    f"Body for {name}",
+                    ["neutral"],
+                    source_scope,
+                )
+                source_path = self.vault_path / created["path"]
+                original_frontmatter, _ = fundus.parse_frontmatter(source_path.read_text())
+
+                result = fundus.move_document(self.config, created["path"], destination)
+
+                destination_path = self.vault_path / destination
+                moved_frontmatter, _ = fundus.parse_frontmatter(destination_path.read_text())
+                classification = fundus.classify_document_scope(self.config, destination_path, moved_frontmatter)
+                index_entry = next(
+                    entry for entry in fundus.load_index(self.config)["documents"] if entry["path"] == destination
+                )
+                expected_scope_tag = (
+                    f"project/{expected_project}"
+                    if expected_project
+                    else f"area/{fundus.slugify_path(expected_scope_path)}"
+                )
+                scope_tags = [
+                    tag for tag in moved_frontmatter["tags"] if tag.startswith("project/") or tag.startswith("area/")
+                ]
+
+                self.assertFalse(source_path.exists())
+                self.assertEqual(result["scope"], expected_kind)
+                self.assertEqual(result["scope_path"], expected_scope_path)
+                self.assertEqual(moved_frontmatter["id"], original_frontmatter["id"])
+                self.assertEqual(moved_frontmatter["scope"], expected_kind)
+                self.assertEqual(moved_frontmatter["scope_path"], expected_scope_path)
+                self.assertEqual(moved_frontmatter.get("project"), expected_project)
+                self.assertIn("neutral", moved_frontmatter["tags"])
+                self.assertEqual(scope_tags, [expected_scope_tag])
+                self.assertEqual(classification.scope.path, expected_scope_path)
+                self.assertEqual(index_entry["id"], original_frontmatter["id"])
+                self.assertEqual(index_entry["scope_path"], expected_scope_path)
+                self.assertEqual(index_entry["physical_parent"], Path(destination.removeprefix("Fundus/")).parent.as_posix())
+                self.assertTrue(fundus.verify_fundus_corpus(self.config)["passed"])
+
+    def test_move_redirect_is_quiet_and_resolves_on_read(self) -> None:
+        created = fundus.create_document(
+            self.config,
+            "demo",
+            "Redirected Note",
+            "Unique redirect destination body",
+            ["neutral"],
+        )
+        source_path = self.vault_path / created["path"]
+        original_frontmatter, _ = fundus.parse_frontmatter(source_path.read_text())
+        destination = "Fundus/Epics/AI Agent Templates/references/redirected-note.md"
+
+        moved = fundus.move_document(self.config, created["path"], destination, leave_stub=True)
+
+        redirect_frontmatter, redirect_body = fundus.parse_frontmatter(source_path.read_text())
+        destination_frontmatter, _ = fundus.parse_frontmatter((self.vault_path / destination).read_text())
+        direct_project_results = fundus.scan_documents(self.config, "demo", "Redirected Note")
+        direct_area_results = fundus.scan_documents(
+            self.config,
+            "demo",
+            "Redirected Note",
+            scope=fundus.area_scope("Epics/AI Agent Templates"),
+        )
+        fundus.rebuild_index(self.config)
+        indexed_project_results = fundus.scan_documents(self.config, "demo", "Redirected Note")
+        source_entry = next(
+            entry for entry in fundus.load_index(self.config)["documents"] if entry["path"] == created["path"]
+        )
+
+        self.assertEqual(moved["redirect_path"], created["path"])
+        self.assertEqual(redirect_frontmatter["type"], "Redirect")
+        self.assertEqual(redirect_frontmatter["redirect_to"], destination)
+        self.assertNotEqual(redirect_frontmatter["id"], original_frontmatter["id"])
+        self.assertEqual(destination_frontmatter["id"], original_frontmatter["id"])
+        self.assertIn("../Epics/AI Agent Templates/references/redirected-note.md", redirect_body)
+        self.assertEqual(fundus.read_document(self.config, created["path"]), (self.vault_path / destination).read_text())
+        self.assertEqual(direct_project_results, [])
+        self.assertEqual(indexed_project_results, [])
+        self.assertEqual([result["path"] for result in direct_area_results], [destination])
+        self.assertEqual(source_entry["kind"], "redirect")
+        self.assertEqual(source_entry["redirect_to"], destination)
+        self.assertTrue(fundus.verify_fundus_corpus(self.config)["passed"])
+
+    def test_redirect_loop_and_invalid_target_fail_safely(self) -> None:
+        paths = [self.vault_path / "Fundus" / "demo" / name for name in ["a.md", "b.md"]]
+        targets = ["Fundus/demo/b.md", "Fundus/demo/a.md"]
+        for path, target in zip(paths, targets, strict=True):
+            frontmatter = fundus.frontmatter_for_new_document(
+                self.config,
+                "demo",
+                fundus.project_scope("demo"),
+                path.stem.upper(),
+                ["redirect"],
+                "Redirect",
+            )
+            frontmatter["redirect_to"] = target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(fundus.render_existing_document(frontmatter, "Redirect"))
+
+        with self.assertRaises(fundus.FundusError) as loop:
+            fundus.read_document(self.config, "Fundus/demo/a.md")
+        self.assertEqual(loop.exception.code, "REDIRECT_LOOP")
+
+        frontmatter, body = fundus.parse_frontmatter(paths[1].read_text())
+        frontmatter["redirect_to"] = "Other/outside.md"
+        paths[1].write_text(fundus.render_existing_document(frontmatter, body))
+        with self.assertRaises(fundus.FundusError) as invalid:
+            fundus.read_document(self.config, "Fundus/demo/b.md")
+        self.assertEqual(invalid.exception.code, "REDIRECT_INVALID")
 
 
 class PathSafetyTest(FundusTestCase):

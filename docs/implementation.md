@@ -193,20 +193,23 @@ Migration and verification enforce that rule.
 
 ### Current scope move behavior
 
-Move currently infers an area when the destination parent does not match the existing project prefix. This can misclassify project-to-project moves and does not provide one canonical project/area classifier.
+One path-derived classifier now defines logical scope for create, update, normalization, migration, indexing, archive/restore, and move operations. A project scope is the first path segment. An area scope is exactly an allowlisted area root plus one logical name, such as `Epics/AI Agent Templates`; deeper folders such as `references/` remain physical placement and never become part of `scope_path`.
+
+Index version 2 records the canonical scope, stable ID, kind, physical parent, and scope-relative path. Normalization dry-runs explicitly report legacy `scope_path` values that overloaded a physical subfolder.
+
+Move supports the full project/area direction matrix. It retains the destination note's stable ID and neutral tags, replaces the old scope tag, maintains the `project` field only for project scope, and refreshes both index paths. `--leave-stub` writes a distinct `Redirect` record with validated canonical `redirect_to` metadata and a relative Markdown link. Redirects are absent from ordinary search, reads follow them with a bounded hop count, and loops or invalid targets fail with stable redirect codes.
 
 ### Current tests
 
 The test suite has broad unit coverage for helper and wrapper behavior. It includes newline framing and lifecycle tests plus an independent stdio client for both source and packaged commands.
 
-The current tests do not prove that:
+The remaining tests do not yet prove that:
 
 - stale indexes repair before search,
 - lost updates are rejected,
 - concurrent writes preserve every index change,
-- path escapes through project overrides and archive metadata are blocked,
-- area initialization passes corpus verification,
-- supported YAML round trips safely.
+- proposal/apply workflows reject stale plans,
+- every MCP result conforms to an explicit output schema.
 
 ## Target source architecture
 

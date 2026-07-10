@@ -104,10 +104,10 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | --- | --- | --- | --- |
 | P11 — MCP and Codex package conformance | done | critical | none |
 | P12 — Fundus path safety and corpus invariants | done | critical | none |
-| P13 — Search consistency and index freshness | planned | critical | P12 |
+| P13 — Search consistency and index freshness | ready | critical | P12 |
 | P14 — Revisions, locking, and recoverable mutations | planned | critical | P12 |
 | P15 — Frontmatter correctness | done | high | none |
-| P16 — Canonical scope and move semantics | ready | high | P12, P15 |
+| P16 — Canonical scope and move semantics | done | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | planned | high | P11 |
 | P18 — Proposal/apply, duplicates, and provenance | planned | high | P14, P17 |
 | P19 — Configuration, portability, and packaging | planned | high | P11 |
@@ -340,7 +340,7 @@ Next phase:
 
 ## P13 — Search consistency and index freshness
 
-Status: planned
+Status: ready
 
 ### Goal
 
@@ -516,7 +516,7 @@ Next phase:
 
 ## P16 — Canonical scope and move semantics
 
-Status: planned
+Status: done
 
 ### Goal
 
@@ -524,30 +524,79 @@ Use one logical scope model for all operations and make every move direction cor
 
 ### Required implementation
 
-- [ ] Implement a canonical scope classifier.
-- [ ] Make `scope_path` the logical root.
-- [ ] Keep physical parent information in path-derived fields.
-- [ ] Update create, normalize, migration, index, archive, and move to use the classifier.
-- [ ] Preserve stable note ID during move.
-- [ ] Correct project-to-project moves.
-- [ ] Correct project-to-area moves.
-- [ ] Correct area-to-project moves.
-- [ ] Correct area-to-area moves.
-- [ ] Preserve neutral tags and replace old scope tags.
-- [ ] Introduce first-class redirect metadata.
-- [ ] Generate a correct relative or validated canonical redirect target.
-- [ ] Exclude redirects from ordinary search and resolve them on read.
-- [ ] Detect redirect loops.
-- [ ] Add a dry-run normalization plan for existing subfolder-valued `scope_path` notes.
+- [x] Implement a canonical scope classifier.
+- [x] Make `scope_path` the logical root.
+- [x] Keep physical parent information in path-derived fields.
+- [x] Update create, normalize, migration, index, archive, and move to use the classifier.
+- [x] Preserve stable note ID during move.
+- [x] Correct project-to-project moves.
+- [x] Correct project-to-area moves.
+- [x] Correct area-to-project moves.
+- [x] Correct area-to-area moves.
+- [x] Preserve neutral tags and replace old scope tags.
+- [x] Introduce first-class redirect metadata.
+- [x] Generate a correct relative or validated canonical redirect target.
+- [x] Exclude redirects from ordinary search and resolve them on read.
+- [x] Detect redirect loops.
+- [x] Add a dry-run normalization plan for existing subfolder-valued `scope_path` notes.
 
 ### Acceptance criteria
 
-- [ ] Full move matrix passes.
-- [ ] Stable IDs behave according to the target.
-- [ ] Redirects are safe and quiet.
-- [ ] Normalization dry-run identifies affected existing notes without writing.
-- [ ] Corpus verification passes after every move fixture.
-- [ ] `task verify` passes.
+- [x] Full move matrix passes.
+- [x] Stable IDs behave according to the target.
+- [x] Redirects are safe and quiet.
+- [x] Normalization dry-run identifies affected existing notes without writing.
+- [x] Corpus verification passes after every move fixture.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Files changed:
+
+- `scripts/fundus.py`
+- `tests/test_fundus.py`
+- `SKILL.md`
+- `README.md`
+- `docs/reference/fundus-cli-reference.md`
+- `docs/implementation.md`
+- `docs/agent-implementation-tracker.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus
+# 74 tests passed
+
+python -m unittest discover -s tests
+# 102 tests passed; one expected package-only skip
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 102 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- A single path-derived classifier treats project scope as one root segment and area scope as exactly `AreaRoot/LogicalName`; nested folders remain physical placement.
+- Index version 2 records stable ID, kind, canonical scope, physical parent, scope-relative path, and redirect target independently of stale metadata.
+- Create, update, add-frontmatter, normalization/migration, index, archive/restore, and move use canonical path classification.
+- The project-to-same-project-folder, project-to-project, project-to-area, area-to-same-area-folder, area-to-area, and area-to-project matrix preserves the note ID and neutral tags while replacing old scope fields and tags.
+- Redirect stubs receive a distinct redirect ID and canonical validated target plus a relative Markdown link. Direct and indexed search suppress redirects; read follows them and rejects loops, invalid targets, and excessive chains with stable codes.
+- Normalization dry-runs identify subfolder-overloaded `scope_path` values without writing and report the canonical logical root plus physical path fields.
+- Corpus verification checks canonical active scope metadata and validates redirect chains; it passes after every move fixture.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- P13 owns stale-index detection and identical indexed/direct search semantics.
+- P14 owns transactional safety when a move updates two notes and the index.
+
+Next phase:
+
+- P13 — Search consistency and index freshness is ready.
 
 ---
 

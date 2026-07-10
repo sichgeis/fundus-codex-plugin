@@ -154,7 +154,7 @@ python dist/fundus/scripts/fundus.py scan --area "Epics/AI Agent Templates" --qu
 python dist/fundus/scripts/fundus.py create --area "Epics/AI Agent Templates" --title "Story Map" --type Epic --content-file /tmp/story-map.md
 ```
 
-`--project` and `--area` are mutually exclusive. Area paths are always relative to `{vault_path}/{fundus_dir}` and cannot target reserved directories or escape the Fundus root.
+`--project` and `--area` are mutually exclusive. An area is exactly an allowlisted root plus one logical name, such as `Epics/AI Agent Templates`. Deeper folders are physical organization within that logical scope and do not become part of `scope_path`.
 
 New notes get OKF-compatible frontmatter (`type`, `title`, `description`, `id`, `scope`, `scope_path`, `timestamp`, `created`, `updated`, and `tags`) while legacy project notes remain readable and updateable.
 
@@ -205,7 +205,19 @@ python dist/fundus/scripts/fundus.py normalize-frontmatter --global --apply
 
 Use `--include-archived` only when archived notes should be normalized too. Use `--add-missing` only when plain Markdown notes should receive generated OKF frontmatter; otherwise missing-frontmatter files are reported and skipped.
 
-Normalization infers project and area scope from the note path, not from the current working directory. This avoids accidental `scope_path` drift when running from a vault or operations folder.
+Normalization infers project and area scope from the note path, not from the current working directory. Its dry-run identifies legacy notes whose `scope_path` incorrectly includes a physical subfolder.
+
+## Move And Redirects
+
+Move a note between project folders, projects, and areas while preserving its stable ID and neutral tags:
+
+```bash
+python dist/fundus/scripts/fundus.py move \
+  --from "Fundus/my-project/research/prompt-boundary.md" \
+  --to "Fundus/Epics/AI Agent Templates/references/prompt-boundary.md"
+```
+
+Add `--leave-stub` when old links must keep working. The source becomes a first-class redirect with a distinct redirect ID; normal search suppresses it, while `read` follows the validated target. Redirect loops and targets outside active Fundus fail without reading arbitrary files.
 
 ## Backup
 

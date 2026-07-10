@@ -48,6 +48,7 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 - Use rewrite only when old body content would remain misleading.
 - New active concept notes should have OKF-compatible frontmatter with strong title, useful description, scope, tags, aliases/resources when relevant, and citations when source material matters.
 - Active `index.md` and `log.md` are reserved files; concept metadata belongs in notes such as `overview.md`.
+- Move notes through the Fundus move operation so stable IDs, logical scope, and scope tags stay consistent. Use a redirect stub only when old paths must remain readable; redirects are not ordinary search evidence.
 
 ## Migration And Maintenance
 

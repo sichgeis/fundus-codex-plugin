@@ -88,6 +88,16 @@ python /path/to/fundus/scripts/fundus.py normalize-frontmatter --global --apply
 
 Add `--include-archived` only when archived notes should be normalized too. Add `--add-missing` only when plain Markdown notes should receive generated OKF frontmatter.
 
+## Move
+
+```bash
+python /path/to/fundus/scripts/fundus.py move \
+  --from "Fundus/my-project/research/prompt-boundary.md" \
+  --to "Fundus/Epics/AI Agent Templates/references/prompt-boundary.md"
+```
+
+Project and area scope are classified from the destination path. The stable note ID and neutral tags remain unchanged; the old scope tag is replaced. Add `--leave-stub` to retain a first-class redirect at the source. Redirect metadata stores a validated canonical `Fundus/...` target, its Markdown link is relative to the source, ordinary scan omits it, and read follows it with loop detection.
+
 ## Backup
 
 ```bash

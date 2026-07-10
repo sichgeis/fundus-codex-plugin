@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
     },
 }
 INDEX_FILENAME = ".fundus-index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
 ARCHIVE_DIRNAME = "_archive"
@@ -84,6 +84,15 @@ class Scope:
     kind: str
     path: str
     display_name: str
+
+
+@dataclass(frozen=True)
+class ScopeClassification:
+    scope: Scope
+    project: str | None
+    active_relative_path: str
+    physical_parent: str
+    scope_relative_path: str
 
 
 @dataclass(frozen=True)
@@ -334,9 +343,12 @@ def normalize_area_path(area: str) -> str:
         raise FundusError("--area must not contain '.' or '..' path segments.", "AREA_PATH_INVALID")
     if parts[0] in RESERVED_FUNDUS_DIRNAMES:
         raise FundusError(f"--area must not target reserved Fundus directory: {parts[0]}", "AREA_PATH_INVALID")
-    if parts[0] not in AREA_ROOT_DIRNAMES or len(parts) < 2:
+    if parts[0] not in AREA_ROOT_DIRNAMES or len(parts) != 2:
         allowed = ", ".join(sorted(AREA_ROOT_DIRNAMES))
-        raise FundusError(f"--area must start with an allowed area root and name: {allowed}", "AREA_PATH_INVALID")
+        raise FundusError(
+            f"--area must contain exactly an allowed area root and one logical name: {allowed}",
+            "AREA_PATH_INVALID",
+        )
     return "/".join(parts)
 
 
@@ -438,6 +450,7 @@ FRONTMATTER_ORDER = [
         "original_path",
         "moved_from",
         "moved_to",
+        "redirect_to",
         "supersedes",
         "tags",
 ]
@@ -788,38 +801,19 @@ def fundus_relative_parts_from_vault_path(config: Config, path: Path) -> tuple[s
 
 
 def active_fundus_relative_path_for_document(config: Config, doc: Document) -> str:
-    original_path = str(doc.frontmatter.get("original_path") or "")
-    if original_path:
-        try:
-            original = resolve_active_note_path(config, original_path)
-            return fundus_relative_path(config, original)
-        except (FundusError, ValueError):
-            pass
-    parts = list(fundus_relative_parts_from_vault_path(config, doc.path))
-    if parts and parts[0] == ARCHIVE_DIRNAME:
-        return "/".join(parts[1:])
-    return "/".join(parts)
+    return classify_document_scope(config, doc.path, doc.frontmatter).active_relative_path
 
 
 def scope_metadata_for_document(config: Config, doc: Document) -> dict[str, Any]:
-    explicit_scope = str(doc.frontmatter.get("scope") or "")
-    explicit_scope_path = str(doc.frontmatter.get("scope_path") or "")
-    active_relative = active_fundus_relative_path_for_document(config, doc)
-    parent_path = str(Path(active_relative).parent).replace(".", "")
-
-    if explicit_scope == "area":
-        scope_path = explicit_scope_path or parent_path
-        return {"scope": "area", "scope_path": scope_path, "area": scope_path}
-    if explicit_scope == "project":
-        scope_path = explicit_scope_path or doc.project or parent_path
-        return {"scope": "project", "scope_path": scope_path, "area": None}
-    if explicit_scope_path:
-        return {"scope": "area", "scope_path": explicit_scope_path, "area": explicit_scope_path}
-    if doc.project:
-        return {"scope": "project", "scope_path": doc.project, "area": None}
-    if parent_path:
-        return {"scope": "area", "scope_path": parent_path, "area": parent_path}
-    return {"scope": "area", "scope_path": "", "area": ""}
+    classification = classify_document_scope(config, doc.path, doc.frontmatter)
+    return {
+        "scope": classification.scope.kind,
+        "scope_path": classification.scope.path,
+        "project": classification.project,
+        "area": classification.scope.path if classification.scope.kind == "area" else None,
+        "physical_parent": classification.physical_parent,
+        "scope_relative_path": classification.scope_relative_path,
+    }
 
 
 def frontmatter_list(value: Any) -> list[str]:
@@ -865,10 +859,16 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
     )
     archived = frontmatter_bool(doc.frontmatter.get("archived")) or f"/{ARCHIVE_DIRNAME}/" in f"/{doc.relative_path}"
     scope_metadata = scope_metadata_for_document(config, doc)
+    redirect = is_redirect_frontmatter(doc.frontmatter)
+    kind = "redirect" if redirect else ("reserved" if doc.path.name in RESERVED_FILENAMES else "concept")
     return {
         "path": doc.relative_path,
         "project": doc.project,
         **scope_metadata,
+        "id": doc.frontmatter.get("id"),
+        "type": doc.frontmatter.get("type"),
+        "kind": kind,
+        "redirect_to": doc.frontmatter.get("redirect_to") if redirect else None,
         "title": doc.title,
         "tags": doc.tags,
         "description": doc.frontmatter.get("description"),
@@ -1090,21 +1090,107 @@ def resolve_fundus_note_path(config: Config, path_arg: str | Path, *, allow_rese
     return path
 
 
+def active_relative_parts_for_path(
+    config: Config,
+    path: Path,
+    frontmatter: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    root = fundus_root_dir(config)
+    parts = tuple(ensure_within(root, path).relative_to(root).parts)
+    if not parts:
+        raise FundusError("Cannot classify the Fundus root as a note scope.", "SCOPE_PATH_INVALID")
+    if parts[0] != ARCHIVE_DIRNAME:
+        return parts
+
+    original_path = str((frontmatter or {}).get("original_path") or "")
+    if original_path:
+        try:
+            original = resolve_active_note_path(config, original_path)
+            return tuple(original.relative_to(root).parts)
+        except FundusError:
+            pass
+    archived_parts = parts[1:]
+    if not archived_parts:
+        raise FundusError("Archived note path is missing its active scope path.", "SCOPE_PATH_INVALID")
+    return archived_parts
+
+
+def classify_document_scope(
+    config: Config,
+    path: Path,
+    frontmatter: dict[str, Any] | None = None,
+) -> ScopeClassification:
+    parts = active_relative_parts_for_path(config, path, frontmatter)
+    if parts[0] in RESERVED_FUNDUS_DIRNAMES:
+        raise FundusError(f"Cannot classify reserved Fundus path: {'/'.join(parts)}", "SCOPE_PATH_INVALID")
+
+    if len(parts) == 1 and parts[0] in RESERVED_FILENAMES:
+        scope = Scope(kind="global", path="", display_name=config.fundus_dir)
+        scope_parts: tuple[str, ...] = ()
+        project = None
+    elif parts[0] in AREA_ROOT_DIRNAMES:
+        if len(parts) < 3:
+            raise FundusError(
+                "Area notes must live below an allowed area root and one logical area name.",
+                "SCOPE_PATH_INVALID",
+            )
+        scope = area_scope("/".join(parts[:2]))
+        scope_parts = parts[:2]
+        project = None
+    else:
+        if len(parts) < 2:
+            raise FundusError("Project notes must live below a project directory.", "SCOPE_PATH_INVALID")
+        project = normalize_project_name(parts[0])
+        scope = project_scope(project)
+        scope_parts = parts[:1]
+
+    active_relative_path = "/".join(parts)
+    physical_parent = Path(active_relative_path).parent.as_posix()
+    if physical_parent == ".":
+        physical_parent = ""
+    scope_relative_path = "/".join(parts[len(scope_parts) :])
+    return ScopeClassification(
+        scope=scope,
+        project=project,
+        active_relative_path=active_relative_path,
+        physical_parent=physical_parent,
+        scope_relative_path=scope_relative_path,
+    )
+
+
+def apply_canonical_scope_metadata(
+    config: Config,
+    frontmatter: dict[str, Any],
+    classification: ScopeClassification,
+) -> None:
+    scope = classification.scope
+    frontmatter["scope"] = scope.kind
+    frontmatter["scope_path"] = scope.path
+    if classification.project:
+        frontmatter["project"] = classification.project
+    else:
+        frontmatter.pop("project", None)
+    frontmatter["tags"] = normalize_scope_tags(
+        config,
+        classification.project or "",
+        scope,
+        scope_neutral_tags(frontmatter_list(frontmatter.get("tags"))),
+    )
+
+
+def is_redirect_frontmatter(frontmatter: dict[str, Any]) -> bool:
+    return str(frontmatter.get("type") or "").casefold() == "redirect" or bool(
+        str(frontmatter.get("redirect_to") or "").strip()
+    )
+
+
 def resolve_doc_path(config: Config, path_arg: str) -> Path:
     """Compatibility alias for any validated Fundus Markdown note path."""
     return resolve_fundus_note_path(config, path_arg)
 
 
 def entry_matches_scope(config: Config, entry: dict[str, Any], scope: Scope) -> bool:
-    path = str(entry.get("path") or "")
-    prefix = f"{config.fundus_dir}/{scope.path}/"
-    archive_prefix = f"{config.fundus_dir}/{ARCHIVE_DIRNAME}/{scope.path}/"
-    if scope.kind == "project":
-        return (
-            entry.get("scope") == "project"
-            and entry.get("scope_path") == scope.path
-        ) or entry.get("project") == scope.path
-    return path.startswith(prefix) or path.startswith(archive_prefix) or entry.get("scope_path") == scope.path
+    return entry.get("scope") == scope.kind and entry.get("scope_path") == scope.path
 
 
 def markdown_paths_for_scope(config: Config, scope: Scope, include_archived: bool = False) -> list[Path]:
@@ -1133,6 +1219,8 @@ def scan_documents(
         for entry in existing_index["documents"]:
             if not entry_matches_scope(config, entry, active_scope):
                 continue
+            if entry.get("kind") == "redirect" or entry.get("redirect_to"):
+                continue
             if entry.get("archived") and not include_archived:
                 continue
             score, reason = score_index_entry(entry, query)
@@ -1154,6 +1242,8 @@ def scan_documents(
 
     for path in scan_paths:
         doc = load_document(path, config.vault_path)
+        if is_redirect_frontmatter(doc.frontmatter):
+            continue
         haystack = " ".join([doc.title, *doc.tags, path.name]).lower()
         if query_terms and not all(term in haystack for term in query_terms):
             continue
@@ -1202,6 +1292,7 @@ def frontmatter_for_new_document(
     last_verified: str | None = None,
 ) -> dict[str, Any]:
     timestamp = now_iso()
+    scope_project = scope.path if scope.kind == "project" else project_name
     frontmatter: dict[str, Any] = {
         "type": (doc_type or "Note").strip() or "Note",
         "title": title.strip(),
@@ -1212,10 +1303,10 @@ def frontmatter_for_new_document(
         "created": timestamp,
         "updated": timestamp,
         "timestamp": timestamp,
-        "tags": normalize_scope_tags(config, project_name, scope, extra_tags),
+        "tags": normalize_scope_tags(config, scope_project, scope, extra_tags),
     }
     if scope.kind == "project":
-        frontmatter["project"] = project_name
+        frontmatter["project"] = scope_project
     clean_aliases = [alias.strip() for alias in aliases or [] if alias.strip()]
     if clean_aliases:
         frontmatter["aliases"] = clean_aliases
@@ -1246,16 +1337,18 @@ def create_document(
     owner: str | None = None,
     last_verified: str | None = None,
 ) -> dict[str, Any]:
-    active_scope = scope or project_scope(project_name)
-    project_dir = fundus_scope_dir(config, active_scope)
+    requested_scope = scope or project_scope(project_name)
+    project_dir = fundus_scope_dir(config, requested_scope)
     slug = slugify(title)
     path = resolve_active_note_path(config, project_dir / f"{slug}.md")
     if path.exists():
         raise FundusError(f"Document already exists: {path.relative_to(config.vault_path)}", "NOTE_ALREADY_EXISTS")
+    classification = classify_document_scope(config, path)
+    active_scope = classification.scope
 
     frontmatter = frontmatter_for_new_document(
         config,
-        project_name,
+        classification.project or project_name,
         active_scope,
         title,
         extra_tags,
@@ -1355,37 +1448,8 @@ def update_document(
 
     frontmatter["updated"] = now_iso()
     frontmatter["timestamp"] = frontmatter["updated"]
-    doc = Document(
-        path=path,
-        relative_path=str(path.relative_to(config.vault_path)),
-        title=str(frontmatter.get("title") or path.stem.replace("-", " ").title()),
-        project=str(frontmatter.get("project") or ""),
-        tags=frontmatter_list(frontmatter.get("tags")),
-        created=frontmatter.get("created"),
-        updated=frontmatter.get("updated"),
-        body=body,
-        frontmatter=frontmatter,
-    )
-    if scope is None:
-        if frontmatter.get("scope") == "area" or frontmatter.get("scope_path"):
-            metadata_scope = scope_metadata_for_document(config, doc)
-            active_scope = Scope(
-                kind=str(metadata_scope.get("scope") or "project"),
-                path=str(metadata_scope.get("scope_path") or project_name),
-                display_name=str(metadata_scope.get("scope_path") or project_name),
-            )
-        else:
-            active_scope = project_scope(project_name)
-    else:
-        active_scope = scope
-    if not frontmatter.get("scope"):
-        frontmatter["scope"] = active_scope.kind
-    if not frontmatter.get("scope_path"):
-        frontmatter["scope_path"] = active_scope.path
-    if active_scope.kind == "project" and not frontmatter.get("project"):
-        frontmatter["project"] = project_name
-    if not frontmatter.get("tags"):
-        frontmatter["tags"] = normalize_scope_tags(config, project_name, active_scope, [])
+    classification = classify_document_scope(config, path, frontmatter)
+    apply_canonical_scope_metadata(config, frontmatter, classification)
 
     rendered = render_existing_document(frontmatter, updated_body)
     atomic_write(path, rendered)
@@ -1399,11 +1463,36 @@ def update_document(
     }
 
 
+def resolve_redirect_document_path(config: Config, path: Path, max_hops: int = 32) -> Path:
+    current = path
+    visited: set[Path] = set()
+    for _ in range(max_hops + 1):
+        resolved = current.resolve(strict=False)
+        if resolved in visited:
+            raise FundusError(f"Redirect loop detected at: {current}", "REDIRECT_LOOP")
+        visited.add(resolved)
+        if not current.exists():
+            raise FundusError(f"Redirect target does not exist: {current}", "REDIRECT_TARGET_NOT_FOUND")
+
+        frontmatter, _ = parse_frontmatter(read_note_text(current))
+        if not is_redirect_frontmatter(frontmatter):
+            return current
+        target_arg = str(frontmatter.get("redirect_to") or "").strip()
+        if not target_arg:
+            raise FundusError(f"Redirect is missing redirect_to: {current}", "REDIRECT_INVALID")
+        try:
+            current = resolve_active_note_path(config, target_arg)
+        except FundusError as exc:
+            raise FundusError(f"Redirect target is invalid: {target_arg}", "REDIRECT_INVALID") from exc
+
+    raise FundusError(f"Redirect chain exceeds {max_hops} hops.", "REDIRECT_LOOP")
+
+
 def read_document(config: Config, path_arg: str) -> str:
     path = resolve_fundus_note_path(config, path_arg)
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
-    return read_note_text(path)
+    return read_note_text(resolve_redirect_document_path(config, path))
 
 
 def filesystem_timestamp(path: Path) -> str:
@@ -1436,11 +1525,12 @@ def add_frontmatter_to_document(
         raise FundusError(f"Document already has frontmatter: {path.relative_to(config.vault_path)}")
 
     timestamp = filesystem_timestamp(path)
-    active_scope = scope or project_scope(project_name)
+    classification = classify_document_scope(config, path)
+    active_scope = classification.scope
     note_title = (title or path.stem.replace("-", " ").title()).strip()
     frontmatter = frontmatter_for_new_document(
         config,
-        project_name,
+        classification.project or project_name,
         active_scope,
         note_title,
         extra_tags,
@@ -1469,35 +1559,12 @@ def add_frontmatter_to_document(
 
 
 def fundus_relative_parts_for_active_document(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[str, ...]:
-    original_path = str(frontmatter.get("original_path") or "")
-    if original_path:
-        parts = Path(original_path).parts
-        if parts and parts[0] == config.fundus_dir:
-            return tuple(parts[1:])
-        return tuple(parts)
-
-    parts = fundus_relative_parts_from_vault_path(config, path)
-    if parts and parts[0] == ARCHIVE_DIRNAME:
-        return tuple(parts[1:])
-    return parts
+    return active_relative_parts_for_path(config, path, frontmatter)
 
 
 def infer_scope_from_document_path(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[Scope, str | None]:
-    parts = fundus_relative_parts_for_active_document(config, path, frontmatter)
-    if not parts:
-        raise FundusError(f"Document path is not inside the Fundus root: {path}")
-    if parts[0] in RESERVED_FUNDUS_DIRNAMES:
-        raise FundusError(f"Cannot normalize reserved Fundus path: {path.relative_to(config.vault_path)}")
-
-    if parts[0] in AREA_ROOT_DIRNAMES:
-        area_parts = parts[:-1]
-        if not area_parts:
-            raise FundusError(f"Cannot infer area scope for path: {path.relative_to(config.vault_path)}")
-        area_path = "/".join(area_parts)
-        return area_scope(area_path), None
-
-    project_name = parts[0]
-    return project_scope(project_name), project_name
+    classification = classify_document_scope(config, path, frontmatter)
+    return classification.scope, classification.project
 
 
 def infer_doc_type_from_path(config: Config, path: Path, frontmatter: dict[str, Any], scope: Scope) -> str:
@@ -1592,35 +1659,24 @@ def normalize_frontmatter_for_path(
         }
 
     before_frontmatter = dict(frontmatter)
-    active_scope, inferred_project = infer_scope_from_document_path(config, safe_path, before_frontmatter)
+    classification = classify_document_scope(config, safe_path, before_frontmatter)
+    active_scope = classification.scope
     title = str(frontmatter.get("title") or safe_path.stem.replace("-", " ").title()).strip()
     timestamp = str(frontmatter.get("updated") or frontmatter.get("created") or filesystem_timestamp(safe_path))
     created = str(frontmatter.get("created") or timestamp)
     updated = str(frontmatter.get("updated") or timestamp)
     raw_tags = frontmatter.get("tags") or []
     existing_tags = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
-    project_for_tags = inferred_project or ""
-
     normalized = clone_frontmatter(frontmatter)
     normalized["type"] = infer_doc_type_from_path(config, safe_path, frontmatter, active_scope)
     normalized["title"] = title
     normalized["description"] = str(normalized.get("description") or title).strip()
     normalized["id"] = str(normalized.get("id") or default_document_id(active_scope, title)).strip()
-    normalized["scope"] = active_scope.kind
-    normalized["scope_path"] = active_scope.path
     normalized["created"] = created
     normalized["updated"] = updated
     normalized["timestamp"] = str(normalized.get("timestamp") or updated)
-    if active_scope.kind == "project":
-        normalized["project"] = inferred_project
-    else:
-        normalized.pop("project", None)
-    normalized["tags"] = normalize_scope_tags(
-        config,
-        project_for_tags,
-        active_scope,
-        scope_neutral_tags(existing_tags),
-    )
+    normalized["tags"] = existing_tags
+    apply_canonical_scope_metadata(config, normalized, classification)
 
     changes = frontmatter_changes(before_frontmatter, normalized)
     rendered = render_existing_document_preserving_body(normalized, body)
@@ -1634,6 +1690,16 @@ def normalize_frontmatter_for_path(
         atomic_write(safe_path, rendered)
         refresh_index_entry(config, safe_path)
 
+    previous_scope_path = str(before_frontmatter.get("scope_path") or "")
+    scope_path_change = None
+    if previous_scope_path and previous_scope_path != active_scope.path:
+        reason = (
+            "physical_subfolder_overload"
+            if previous_scope_path.startswith(f"{active_scope.path}/")
+            else "scope_path_mismatch"
+        )
+        scope_path_change = {"before": previous_scope_path, "after": active_scope.path, "reason": reason}
+
     return {
         "path": str(safe_path.relative_to(config.vault_path)),
         "title": title,
@@ -1642,6 +1708,9 @@ def normalize_frontmatter_for_path(
         "skipped": False,
         "scope": active_scope.kind,
         "scope_path": active_scope.path,
+        "physical_parent": classification.physical_parent,
+        "scope_relative_path": classification.scope_relative_path,
+        "scope_path_change": scope_path_change,
         "body_sha256": body_sha256,
         "body_unchanged": body_unchanged,
         "changes": changes,
@@ -1693,6 +1762,7 @@ def normalize_frontmatter_paths(
     changed_count = sum(1 for doc in documents if doc.get("changed"))
     applied_count = sum(1 for doc in documents if doc.get("applied"))
     skipped_count = sum(1 for doc in documents if doc.get("skipped"))
+    scope_path_change_count = sum(1 for doc in documents if doc.get("scope_path_change"))
     return {
         "scope": scope_name,
         "scope_path": scope_path,
@@ -1705,6 +1775,7 @@ def normalize_frontmatter_paths(
         "changed_count": changed_count,
         "applied_count": applied_count,
         "skipped_count": skipped_count,
+        "scope_path_change_count": scope_path_change_count,
     }
 
 
@@ -1879,6 +1950,8 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
 
     timestamp = now_iso()
     frontmatter = clone_frontmatter(doc.frontmatter)
+    classification = classify_document_scope(config, source_path, frontmatter)
+    apply_canonical_scope_metadata(config, frontmatter, classification)
     frontmatter["updated"] = timestamp
     frontmatter["archived"] = True
     frontmatter["archived_at"] = timestamp
@@ -1923,6 +1996,8 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     frontmatter["updated"] = timestamp
     for key in ["archived", "archived_at", "archived_reason", "original_path"]:
         frontmatter.pop(key, None)
+    classification = classify_document_scope(config, destination_path, frontmatter)
+    apply_canonical_scope_metadata(config, frontmatter, classification)
 
     atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
     archive_path.unlink()
@@ -2015,6 +2090,39 @@ def area_init(config: Config, project_name: str, area: str, area_type: str, titl
     }
 
 
+def redirect_frontmatter_for_move(
+    config: Config,
+    doc: Document,
+    source_classification: ScopeClassification,
+    destination_path: Path,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    destination = str(destination_path.relative_to(config.vault_path))
+    source_id_path = Path(source_classification.active_relative_path).with_suffix("").as_posix()
+    frontmatter: dict[str, Any] = {
+        "type": "Redirect",
+        "title": doc.title,
+        "description": f"Redirect to {destination}.",
+        "id": f"redirect/{slugify_path(source_id_path)}",
+        "scope": source_classification.scope.kind,
+        "scope_path": source_classification.scope.path,
+        "created": str(doc.frontmatter.get("created") or timestamp),
+        "updated": timestamp,
+        "timestamp": timestamp,
+        "redirect_to": destination,
+        "moved_to": destination,
+        "tags": normalize_scope_tags(
+            config,
+            source_classification.project or "",
+            source_classification.scope,
+            ["redirect"],
+        ),
+    }
+    if source_classification.project:
+        frontmatter["project"] = source_classification.project
+    return frontmatter
+
+
 def move_document(config: Config, source_arg: str, destination_arg: str, leave_stub: bool = False) -> dict[str, Any]:
     source_path = resolve_active_note_path(config, source_arg)
     destination_path = resolve_active_note_path(config, destination_arg)
@@ -2029,36 +2137,30 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
         raise FundusError("Move source and destination must be active Fundus paths, not archive paths.")
 
     doc = load_document(source_path, config.vault_path)
+    if is_redirect_frontmatter(doc.frontmatter):
+        raise FundusError("Move the redirect target instead of a redirect stub.", "REDIRECT_MOVE_INVALID")
+    source_classification = classify_document_scope(config, source_path, doc.frontmatter)
+    destination_classification = classify_document_scope(config, destination_path, doc.frontmatter)
+    moved_frontmatter = clone_frontmatter(doc.frontmatter)
+    moved_frontmatter["updated"] = now_iso()
+    moved_frontmatter["moved_from"] = doc.relative_path
+    apply_canonical_scope_metadata(config, moved_frontmatter, destination_classification)
+
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, destination_path)
+    atomic_write(destination_path, render_existing_document_preserving_body(moved_frontmatter, doc.body))
     if leave_stub:
-        frontmatter = clone_frontmatter(doc.frontmatter)
-        frontmatter["updated"] = now_iso()
-        frontmatter["moved_to"] = str(destination_path.relative_to(config.vault_path))
-        stub_target = str(destination_path.relative_to(config.vault_path))
-        stub_body = f"# {doc.title}\n\nMoved to [{destination_path.name}]({stub_target}).\n"
-        atomic_write(source_path, render_existing_document(frontmatter, stub_body))
+        redirect_frontmatter = redirect_frontmatter_for_move(
+            config,
+            doc,
+            source_classification,
+            destination_path,
+        )
+        relative_target = Path(os.path.relpath(destination_path, start=source_path.parent)).as_posix()
+        stub_body = f"# {doc.title}\n\nMoved to [{destination_path.name}]({relative_target}).\n"
+        atomic_write(source_path, render_existing_document(redirect_frontmatter, stub_body))
     else:
         source_path.unlink()
         remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
-    moved_doc = load_document(destination_path, config.vault_path)
-    moved_frontmatter = clone_frontmatter(moved_doc.frontmatter)
-    moved_frontmatter["updated"] = now_iso()
-    moved_frontmatter["moved_from"] = doc.relative_path
-    destination_fundus_relative = destination_path.relative_to(fundus_root_dir(config)).as_posix()
-    destination_parent = str(Path(destination_fundus_relative).parent)
-    existing_project = str(moved_frontmatter.get("project") or "")
-    if destination_parent and (not existing_project or not destination_fundus_relative.startswith(f"{existing_project}/")):
-        moved_frontmatter.pop("project", None)
-        moved_frontmatter["scope"] = "area"
-        moved_frontmatter["scope_path"] = destination_parent
-        existing_tags = [
-            tag
-            for tag in list(moved_frontmatter.get("tags") or [])
-            if not str(tag).startswith("project/") and not str(tag).startswith("area/")
-        ]
-        moved_frontmatter["tags"] = normalize_scope_tags(config, "", area_scope(destination_parent), existing_tags)
-    atomic_write(destination_path, render_existing_document_preserving_body(moved_frontmatter, moved_doc.body))
     refresh_index_entry(config, source_path)
     refresh_index_entry(config, destination_path)
     return {
@@ -2066,6 +2168,9 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
         "original_path": doc.relative_path,
         "title": doc.title,
         "stub_left": leave_stub,
+        "scope": destination_classification.scope.kind,
+        "scope_path": destination_classification.scope.path,
+        "redirect_path": doc.relative_path if leave_stub else None,
     }
 
 
@@ -2352,6 +2457,32 @@ def verify_fundus_corpus(config: Config, destination_dir: str | None = None) -> 
                 issues.append({"path": relative_path, "reason": "concept_missing_frontmatter"})
             elif not str(frontmatter.get("type") or "").strip():
                 issues.append({"path": relative_path, "reason": "concept_missing_type"})
+            else:
+                try:
+                    classification = classify_document_scope(verify_config, path, frontmatter)
+                except FundusError as exc:
+                    issues.append({"path": relative_path, "reason": "scope_path_invalid", "code": exc.code})
+                    continue
+                metadata_matches = (
+                    frontmatter.get("scope") == classification.scope.kind
+                    and frontmatter.get("scope_path") == classification.scope.path
+                    and (
+                        str(frontmatter.get("project") or "") == (classification.project or "")
+                    )
+                )
+                expected_scope_tag = (
+                    f"project/{classification.project}"
+                    if classification.project
+                    else f"area/{slugify_path(classification.scope.path)}"
+                )
+                tags = frontmatter_list(frontmatter.get("tags"))
+                if not metadata_matches or expected_scope_tag not in tags:
+                    issues.append({"path": relative_path, "reason": "scope_metadata_mismatch"})
+                if is_redirect_frontmatter(frontmatter):
+                    try:
+                        resolve_redirect_document_path(verify_config, path)
+                    except FundusError as exc:
+                        issues.append({"path": relative_path, "reason": "redirect_invalid", "code": exc.code})
 
     smoke_specs = [
         ("project", "prompting-service", "prompting-service", project_scope("prompting-service"), False),
