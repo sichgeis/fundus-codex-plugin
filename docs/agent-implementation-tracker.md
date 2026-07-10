@@ -109,8 +109,8 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | P15 — Frontmatter correctness | done | high | none |
 | P16 — Canonical scope and move semantics | done | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | done | high | P11 |
-| P18 — Proposal/apply, duplicates, and provenance | ready | high | P14, P17 |
-| P19 — Configuration, portability, and packaging | planned | high | P11 |
+| P18 — Proposal/apply, duplicates, and provenance | done | high | P14, P17 |
+| P19 — Configuration, portability, and packaging | ready | high | P11 |
 | P20 — Modularization, CI, and release readiness | planned | medium | P13-P19 |
 
 Parallel work is allowed only when branches do not change the same contracts. P11, P12, P15, and part of P19 are conceptually parallel, but a single agent should complete P11 first.
@@ -801,7 +801,7 @@ Next phase:
 
 ## P18 — Proposal/apply, duplicate prevention, and provenance
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -809,37 +809,96 @@ Turn safe curation behavior from prompt guidance into backend-supported workflow
 
 ### Required implementation
 
-- [ ] Add propose-create.
-- [ ] Add apply-create.
-- [ ] Add propose-update.
-- [ ] Add apply-update with expected revision.
-- [ ] Represent section replace, append, rewrite, and metadata changes in proposals.
-- [ ] Produce deterministic diffs or structured before/after summaries.
-- [ ] Add duplicate checks for title, ID, alias, ticket, resource, and high-confidence similarity.
-- [ ] Require explicit override for reviewed duplicate creation.
-- [ ] Add provenance fields and source fingerprints.
-- [ ] Add verification status.
-- [ ] Add mark-stale, verify-note, or equivalent operations.
-- [ ] Update SKILL behavior for implicit read-only versus explicit mutation.
-- [ ] Add agent-evaluation fixtures.
-- [ ] Keep human-facing confirmations compact.
+- [x] Add propose-create.
+- [x] Add apply-create.
+- [x] Add propose-update.
+- [x] Add apply-update with expected revision.
+- [x] Represent section replace, append, rewrite, and metadata changes in proposals.
+- [x] Produce deterministic diffs or structured before/after summaries.
+- [x] Add duplicate checks for title, ID, alias, ticket, resource, and high-confidence similarity.
+- [x] Require explicit override for reviewed duplicate creation.
+- [x] Add provenance fields and source fingerprints.
+- [x] Add verification status.
+- [x] Add mark-stale, verify-note, or equivalent operations.
+- [x] Update SKILL behavior for implicit read-only versus explicit mutation.
+- [x] Add agent-evaluation fixtures.
+- [x] Keep human-facing confirmations compact.
 
 ### Acceptance criteria
 
-- [ ] Proposal operations never write.
-- [ ] Apply operations reject stale proposals.
-- [ ] Duplicate candidates prevent accidental duplicate creation.
-- [ ] Explicit broad write intent can complete safely in one turn.
-- [ ] Ordinary research produces a stale-note proposal rather than a silent rewrite.
-- [ ] Provenance can indicate current, stale, and unverified states.
-- [ ] Agent evaluation set meets documented expectations.
-- [ ] `task verify` passes.
+- [x] Proposal operations never write.
+- [x] Apply operations reject stale proposals.
+- [x] Duplicate candidates prevent accidental duplicate creation.
+- [x] Explicit broad write intent can complete safely in one turn.
+- [x] Ordinary research produces a stale-note proposal rather than a silent rewrite.
+- [x] Provenance can indicate current, stale, and unverified states.
+- [x] Agent evaluation set meets documented expectations.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Files changed:
+
+- `scripts/fundus.py`
+- `scripts/fundus_mcp.py`
+- `tests/test_fundus.py`
+- `tests/test_fundus_mcp.py`
+- `tests/test_fundus_mcp_integration.py`
+- `tests/test_skill_contract.py`
+- `tests/fixtures/agent_evaluations.json`
+- `SKILL.md`
+- `README.md`
+- `docs/reference/fundus-cli-reference.md`
+- `docs/implementation.md`
+- `docs/agent-implementation-tracker.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus.ProposalWorkflowTest
+# 5 tests passed
+
+python -m unittest tests.test_fundus_mcp tests.test_fundus_mcp_integration
+# 26 tests passed; one expected package-only skip
+
+python -m unittest discover -s tests
+# 122 tests passed; one expected package-only skip
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 122 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- Create/update proposals are deterministic, redaction-aware, bounded, and read-only. Repeating the same create intent produces the same proposal ID and diff without creating a lock, index, or note.
+- Apply validates proposal integrity under the corpus lock, rechecks duplicate state, and binds updates to the proposal's expected revision; external edits return `REVISION_CONFLICT` unchanged.
+- Append, section replace, full rewrite, and allowed retrieval/provenance metadata changes are represented in proposals with unified body diffs and structured metadata summaries.
+- Duplicate candidates cover exact title, stable ID, alias, ticket ID, resource, and high-confidence similarity. Apply requires both an explicit override and every currently returned reviewed candidate path.
+- New notes default to `verification_status: unverified`; proposals and metadata operations support `verified_against`, `source_fingerprint`, current/stale/unverified state, last verification, and stale reason.
+- `mark_stale` records contradicted evidence; `verify_note` requires a source reference or fingerprint and transitions the note to current. Index version 4 exposes verification state and source fingerprint in retrieval.
+- The default MCP surface now prefers proposal/apply and keeps immediate create/update as unlisted deprecated compatibility aliases. CLI equivalents and proposal-file apply routes use the same core functions.
+- Agent-evaluation fixtures cover explicit save, reviewed duplicate override, broad update intent, stale evidence without write intent, and read-only research. SKILL instructions prohibit silent apply or raw writes.
+- Proposal diffs are capped at 12,000 characters for compact human review.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- Similarity duplicate detection is deliberately conservative and local; P20 release monitoring should watch false-positive rates before tuning thresholds.
+- P19 owns portable configuration defaults and artifact scans; P20 owns removal timing for immediate compatibility aliases.
+
+Next phase:
+
+- P19 — Configuration, portability, and packaging is ready.
 
 ---
 
 ## P19 — Configuration, portability, and packaging
 
-Status: planned
+Status: ready
 
 ### Goal
 

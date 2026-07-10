@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,16 @@ class SkillContractTest(unittest.TestCase):
         self.assertIn("Do not use generic Obsidian tools", skill)
         self.assertIn("Do not create, update, or rewrite Markdown directly as a fallback", skill)
         self.assertIn("If you cannot locate the helper path", skill)
+
+    def test_agent_evaluation_fixture_covers_proposal_duplicate_and_stale_flows(self) -> None:
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "agent_evaluations.json").read_text())
+        cases = {case["name"]: case for case in fixture["cases"]}
+
+        self.assertEqual(fixture["version"], 1)
+        self.assertIn("duplicate-create-needs-review", cases)
+        self.assertIn("stale-evidence-without-write-intent", cases)
+        self.assertIn("apply_create_without_reviewed_override", cases["duplicate-create-needs-review"]["must_not"])
+        self.assertEqual(cases["broad-update-intent"]["expected_operations"], ["propose_update", "apply_update"])
 
 
 if __name__ == "__main__":

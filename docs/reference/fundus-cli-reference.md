@@ -4,7 +4,7 @@ This reference is installed with the skill for progressive disclosure. Load it o
 
 ## MCP Surface
 
-The installed plugin lists the compact workbench tools `search`, `read`, `create`, `update`, `move`, `archive`, `restore`, and `doctor`. Administrative operations in this document stay available through the CLI; a deliberately launched standalone server may expose them with `fundus_mcp.py --admin`. Previous normal MCP names remain unlisted compatibility aliases.
+The installed plugin lists `search`, `read`, `propose_create`, `apply_create`, `propose_update`, `apply_update`, `move`, `archive`, `restore`, `mark_stale`, `verify_note`, and `doctor`. Administrative operations in this document stay available through the CLI; a deliberately launched standalone server may expose them with `fundus_mcp.py --admin`. Immediate create/update and previous normal MCP names remain unlisted compatibility aliases.
 
 MCP successes return both text JSON and schema-validated `structuredContent`. Tool failures return `isError: true` plus structured `error` and stable `code` fields.
 
@@ -19,6 +19,36 @@ python /path/to/fundus/scripts/fundus.py read --path "Fundus/my-project/authenti
 ```
 
 ## Create And Update
+
+Prefer proposal/apply. `propose-create` and `propose-update` write nothing and print a JSON proposal with deterministic diff, revision, and duplicate candidates. Save that JSON through a safe caller-managed file, then apply it:
+
+```bash
+python /path/to/fundus/scripts/fundus.py propose-create \
+  --title "Authentication Flow" \
+  --content-file /private/tmp/fundus-note.md
+
+python /path/to/fundus/scripts/fundus.py apply-create \
+  --proposal-file /private/tmp/fundus-create-proposal.json
+
+python /path/to/fundus/scripts/fundus.py propose-update \
+  --path "Fundus/my-project/authentication-flow.md" \
+  --mode append \
+  --content-file /private/tmp/fundus-update.md
+
+python /path/to/fundus/scripts/fundus.py apply-update \
+  --proposal-file /private/tmp/fundus-update-proposal.json
+```
+
+Duplicate candidates block create/update apply. Override only after reviewing all candidates, using `--duplicate-override` plus one `--reviewed-duplicate PATH` for every returned path.
+
+Record evidence lifecycle explicitly:
+
+```bash
+python /path/to/fundus/scripts/fundus.py mark-stale --path "Fundus/my-project/note.md" --reason "Source changed" --expected-revision "sha256:..."
+python /path/to/fundus/scripts/fundus.py verify-note --path "Fundus/my-project/note.md" --verified-against "github:org/repo@abc" --source-fingerprint "github:org/repo:path@sha256:def" --expected-revision "sha256:..."
+```
+
+The immediate commands below remain compatibility routes.
 
 ```bash
 python /path/to/fundus/scripts/fundus.py create \

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "explicit-save-without-duplicates",
+      "intent": "Document this finding in Fundus",
+      "expected_operations": ["propose_create", "apply_create"],
+      "must_not": ["raw_markdown_write"]
+    },
+    {
+      "name": "duplicate-create-needs-review",
+      "intent": "Save a note whose alias and ticket already exist",
+      "expected_operations": ["propose_create"],
+      "must_not": ["apply_create_without_reviewed_override"]
+    },
+    {
+      "name": "broad-update-intent",
+      "intent": "Update everything relevant in Fundus",
+      "expected_operations": ["propose_update", "apply_update"],
+      "must_not": ["immediate_update"]
+    },
+    {
+      "name": "stale-evidence-without-write-intent",
+      "intent": "Research shows the Fundus note is stale",
+      "expected_operations": ["propose_update"],
+      "must_not": ["apply_update", "immediate_update"]
+    },
+    {
+      "name": "read-only-research",
+      "intent": "Check Fundus for prior context",
+      "expected_operations": ["search", "read"],
+      "must_not": ["apply_create", "apply_update", "mark_stale"]
+    }
+  ]
+}

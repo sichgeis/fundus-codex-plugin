@@ -10,6 +10,8 @@ Search is accelerated by a lightweight JSON index at `{vault_path}/{fundus_dir}/
 
 Reads and search results include a SHA-256 revision. Pass that value as `--expected-revision` for overwrite-like operations so a human edit made after the read produces `REVISION_CONFLICT` without being overwritten. Fundus serializes note-plus-index writes across processes and journals multi-file moves for rollback or next-run recovery.
 
+Proposal-first create/update detects duplicate titles, IDs, aliases, ticket keys, resources, and high-confidence similarity before applying. Duplicate creation requires an explicit override plus every reviewed candidate path. Notes can record `verified_against`, `source_fingerprint`, and `verification_status`; use the dedicated stale and verification operations to keep evidence lifecycle visible.
+
 ## Current Direction
 
 Fundus is being refined into Christian's personal Codex workbench for durable work knowledge. The workbench should stay explicit: use it to search, save, retrieve, update, and curate Fundus knowledge. During ticket or research work, Codex may also do a read-only Fundus lookup when prior context is likely useful.
@@ -108,9 +110,9 @@ The server is self-contained and uses the Python standard library, the bundled F
 python dist/fundus/scripts/fundus_mcp.py --check
 ```
 
-The default MCP surface is the compact workbench `search`, `read`, `create`, `update`, `move`, `archive`, `restore`, and `doctor`. Each tool advertises a title, input/output schemas, and audited behavior annotations; successful results include schema-validated structured content plus text JSON compatibility, while failures include a stable machine-readable code.
+The default MCP surface is the proposal-oriented workbench `search`, `read`, `propose_create`, `apply_create`, `propose_update`, `apply_update`, `move`, `archive`, `restore`, `mark_stale`, `verify_note`, and `doctor`. Proposals are read-only, include deterministic diffs and duplicate candidates, and bind update apply to the current revision. Each tool advertises a title, input/output schemas, and audited behavior annotations; successful results include schema-validated structured content plus text JSON compatibility, while failures include a stable machine-readable code.
 
-Maintenance operations remain in the CLI and can be exposed deliberately by launching `fundus_mcp.py --admin`. Previous normal MCP names such as `scan_fundus` and `create_note` remain callable as unlisted deprecated aliases during the compatibility window. All transports share the same configuration, path, revision, redaction, locking, index, and archive application layer.
+Maintenance operations remain in the CLI and can be exposed deliberately by launching `fundus_mcp.py --admin`. Immediate create/update and previous MCP names such as `scan_fundus` and `create_note` remain callable as unlisted deprecated aliases during the compatibility window. All transports share the same configuration, path, revision, redaction, locking, index, and archive application layer.
 
 ## Plugin Package
 

@@ -44,10 +44,14 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 - Do not use generic Obsidian tools, `apply_patch`, shell redirection, editor writes, or raw Markdown file edits for Fundus note writes.
 - If both Fundus MCP tools and `scripts/fundus.py` are unavailable, stop and tell the user Fundus writes are blocked. Do not create, update, or rewrite Markdown directly as a fallback.
 - Scan before creating. If a likely match exists, read it and update instead of creating a duplicate.
+- Use `propose_create` / `propose_update` first. Apply only when the user's write intent covers the change and the proposal is still current.
+- Never bypass duplicate candidates silently. Apply a duplicate override only after reviewing every returned candidate path and passing those paths back explicitly.
 - Use append or section replace for incremental additions.
 - Use rewrite only when old body content would remain misleading.
 - Carry the SHA-256 revision returned by read or scan into overwrite-like operations. Treat `REVISION_CONFLICT` as a signal to re-read and reconcile, never as permission to force an overwrite.
 - New active concept notes should have OKF-compatible frontmatter with strong title, useful description, scope, tags, aliases/resources when relevant, and citations when source material matters.
+- Record `verified_against`, `source_fingerprint`, and `verification_status` when current source evidence is known. Use `mark_stale` when evidence is contradicted and `verify_note` after checking current sources.
+- Without broad Fundus write intent, stale research produces a proposal or concise suggestion, not `apply_update` or an immediate mutation.
 - Active `index.md` and `log.md` are reserved files; concept metadata belongs in notes such as `overview.md`.
 - Move notes through the Fundus move operation so stable IDs, logical scope, and scope tags stay consistent. Use a redirect stub only when old paths must remain readable; redirects are not ordinary search evidence.
 

@@ -136,6 +136,44 @@ class McpWrapperTest(McpFundusTestCase):
         self.assertIn("aliases:", body["content"])
         self.assertIn("resource: https://jira.example/browse/BACKEND-2291", body["content"])
 
+    def test_proposal_apply_and_verification_wrappers(self) -> None:
+        create_proposal = fundus_mcp.propose_create(
+            "Proposed Wrapper",
+            "Body",
+            ["domain"],
+            verified_against=["jira:BACKEND-1"],
+            source_fingerprint="jira:BACKEND-1@v1",
+            verification_status="current",
+            project="demo",
+            project_root=str(self.project_root),
+        )
+        created = fundus_mcp.apply_create(create_proposal, project_root=str(self.project_root))
+        update_proposal = fundus_mcp.propose_update(
+            created["path"],
+            "append",
+            "Follow-up",
+            metadata_changes={"verification_status": "unverified"},
+            project_root=str(self.project_root),
+        )
+        updated = fundus_mcp.apply_update(update_proposal, project_root=str(self.project_root))
+        stale = fundus_mcp.mark_stale(
+            created["path"],
+            "Evidence changed",
+            updated["revision"],
+            project_root=str(self.project_root),
+        )
+        verified = fundus_mcp.verify_note(
+            created["path"],
+            ["github:org/repo@abc"],
+            "github:org/repo:path@sha256:def",
+            stale["revision"],
+            project_root=str(self.project_root),
+        )
+
+        self.assertTrue(created["applied"])
+        self.assertTrue(updated["applied"])
+        self.assertTrue(verified["revision"].startswith("sha256:"))
+
     def test_update_note_redacts_and_refreshes_existing_index(self) -> None:
         created = fundus_mcp.create_note(
             "Existing Ticket",
@@ -333,7 +371,23 @@ class McpProtocolTest(McpFundusTestCase):
         self.assertEqual(initialized["result"]["serverInfo"]["version"], "0.1.0")
         self.assertIn("tools", initialized["result"]["capabilities"])
         self.assertIn("never through raw Markdown", initialized["result"]["instructions"])
-        self.assertEqual(set(tools), {"search", "read", "create", "update", "move", "archive", "restore", "doctor"})
+        self.assertEqual(
+            set(tools),
+            {
+                "search",
+                "read",
+                "propose_create",
+                "apply_create",
+                "propose_update",
+                "apply_update",
+                "move",
+                "archive",
+                "restore",
+                "mark_stale",
+                "verify_note",
+                "doctor",
+            },
+        )
         self.assertEqual(
             tools["search"]["annotations"],
             {
@@ -343,9 +397,9 @@ class McpProtocolTest(McpFundusTestCase):
                 "openWorldHint": False,
             },
         )
-        self.assertEqual(tools["create"]["inputSchema"]["properties"]["aliases"]["type"], "array")
-        self.assertEqual(tools["update"]["inputSchema"]["properties"]["mode"]["enum"], ["append", "replace", "rewrite"])
-        self.assertEqual(tools["update"]["inputSchema"]["properties"]["expected_revision"]["type"], "string")
+        self.assertEqual(tools["propose_create"]["inputSchema"]["properties"]["aliases"]["type"], "array")
+        self.assertEqual(tools["propose_update"]["inputSchema"]["properties"]["mode"]["enum"], ["append", "replace", "rewrite"])
+        self.assertEqual(tools["apply_update"]["inputSchema"]["properties"]["proposal"]["type"], "object")
         for tool in tools.values():
             self.assertTrue(tool["title"])
             self.assertLess(len(tool["description"]), 160)

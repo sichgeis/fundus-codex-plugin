@@ -108,7 +108,7 @@ The index is:
 {vault_path}/{fundus_dir}/.fundus-index.json
 ```
 
-Index version 3 stores canonical search records with metadata, bounded excerpts, tokens, ticket IDs, archive/redirect kind, content revision, and a fast `mtime_ns`/`ctime_ns`/size fingerprint.
+Index version 4 stores canonical search records with metadata, bounded excerpts, tokens, ticket IDs, archive/redirect kind, provenance and verification state, content revision, and a fast `mtime_ns`/`ctime_ns`/size fingerprint.
 
 Current behavior:
 
@@ -135,6 +135,14 @@ Move, archive, restore, and backup restore snapshot every affected file plus the
 
 Backup manifests can be verified file-by-file by size and SHA-256. Restore is a dry-run by default; apply verifies first, creates a safety backup, restores under the lock and journal, rebuilds the index, and requires corpus verification before commit.
 
+### Current proposal, duplicate, and provenance behavior
+
+Create and update use deterministic, read-only proposal operations before apply. Proposals contain an integrity ID, target path and revision where applicable, redaction warnings, deterministic unified body diff, metadata changes, and current duplicate candidates. Apply recomputes proposal integrity, freshness, and duplicates while holding the mutation lock.
+
+Create duplicate detection covers exact title, stable ID, alias, ticket, resource, and high-confidence title/metadata similarity. Any candidate blocks apply unless the caller explicitly enables the override and passes every reviewed candidate path. Update proposals use the same check while excluding the note being updated.
+
+Operational provenance fields are `verified_against`, `source_fingerprint`, `verification_status`, `last_verified`, and optional `stale_reason`. `mark_stale` records contradicted evidence; `verify_note` requires a source reference or fingerprint and transitions the note to current. Search records expose verification status and source fingerprint.
+
 ### Current frontmatter behavior
 
 Fundus uses a pinned, vendored `ruamel.yaml==0.19.1` round-trip codec. It deliberately supports scalar values and lists of scalar values, preserves unknown supported keys and comments, quotes serialized values safely, and normalizes known list and timestamp fields through typed helpers.
@@ -146,7 +154,7 @@ Metadata-only changes preserve the decoded UTF-8 body exactly. LF, CRLF, and a l
 The server currently:
 
 - derives name, title, concise description, handler, input schema, output schema, category, compatibility state, and behavior annotations from one operation registry,
-- lists a compact default workbench: `search`, `read`, `create`, `update`, `move`, `archive`, `restore`, and `doctor`,
+- lists a compact proposal-oriented workbench: `search`, `read`, `propose_create`, `apply_create`, `propose_update`, `apply_update`, `move`, `archive`, `restore`, `mark_stale`, `verify_note`, and `doctor`,
 - exposes maintenance operations only through explicit `--admin` MCP mode or the CLI,
 - accepts the previous normal tool names as unlisted deprecated compatibility aliases,
 - returns successful object results as both backward-compatible text JSON and schema-validated `structuredContent`,
@@ -164,7 +172,7 @@ The server currently:
 
 An independent subprocess client exercises the source server and exact packaged command through initialize, initialized notification, tools/list, a real temporary-vault tool call, unknown-tool recovery, and a final ping.
 
-The CLI and every MCP handler call the same core application functions. P18 will add proposal/apply operations to the workbench without duplicating mutation logic.
+The CLI and every MCP handler call the same core application functions. Immediate create/update names remain unlisted compatibility aliases; proposal/apply is the preferred workbench contract.
 
 ### Current plugin configuration
 

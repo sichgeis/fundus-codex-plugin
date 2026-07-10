@@ -83,6 +83,9 @@ def create_note(
     status: str | None = None,
     owner: str | None = None,
     last_verified: str | None = None,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    verification_status: str | None = None,
     project: str | None = None,
     project_root: str | None = None,
     area: str | None = None,
@@ -103,6 +106,65 @@ def create_note(
         status,
         owner,
         last_verified,
+        verified_against,
+        source_fingerprint,
+        verification_status,
+    )
+
+
+def propose_create(
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    type: str | None = None,
+    description: str | None = None,
+    id: str | None = None,
+    aliases: list[str] | None = None,
+    resource: str | None = None,
+    status: str | None = None,
+    owner: str | None = None,
+    last_verified: str | None = None,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    verification_status: str | None = None,
+    project: str | None = None,
+    project_root: str | None = None,
+    area: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project, project_root, area)
+    return fundus_core.propose_create_document(
+        context.config,
+        context.project_name,
+        title,
+        content,
+        tags,
+        context.scope,
+        type,
+        description,
+        id,
+        aliases,
+        resource,
+        status,
+        owner,
+        last_verified,
+        verified_against,
+        source_fingerprint,
+        verification_status,
+    )
+
+
+def apply_create(
+    proposal: dict[str, Any],
+    duplicate_override: bool = False,
+    reviewed_duplicate_paths: list[str] | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.apply_create_proposal(
+        context.config,
+        proposal,
+        duplicate_override,
+        reviewed_duplicate_paths,
     )
 
 
@@ -125,6 +187,67 @@ def update_note(
         content,
         section,
         context.scope,
+        expected_revision,
+    )
+
+
+def propose_update(
+    path: str,
+    mode: Literal["append", "replace", "rewrite"],
+    content: str,
+    section: str | None = None,
+    metadata_changes: dict[str, Any] | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.propose_update_document(
+        context.config,
+        path,
+        mode,
+        content,
+        section,
+        metadata_changes,
+    )
+
+
+def apply_update(
+    proposal: dict[str, Any],
+    duplicate_override: bool = False,
+    reviewed_duplicate_paths: list[str] | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.apply_update_proposal(
+        context.config,
+        proposal,
+        duplicate_override,
+        reviewed_duplicate_paths,
+    )
+
+
+def mark_stale(
+    path: str,
+    reason: str,
+    expected_revision: str | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.mark_note_stale(context.config, path, reason, expected_revision)
+
+
+def verify_note(
+    path: str,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    expected_revision: str | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.verify_note(
+        context.config,
+        path,
+        verified_against,
+        source_fingerprint,
         expected_revision,
     )
 
@@ -389,7 +512,14 @@ PARAMETER_DESCRIPTIONS = {
     "status": "Lifecycle status such as active or stale.",
     "owner": "Person or system responsible for keeping the note useful.",
     "last_verified": "Date when the note was last checked against source truth.",
+    "verified_against": "Evidence identifiers used to verify this note.",
+    "source_fingerprint": "Stable source identifier including revision or content hash.",
+    "verification_status": "Verification state: current, stale, or unverified.",
     "expected_revision": "SHA-256 revision returned by read or scan; mismatches fail without writing.",
+    "proposal": "Proposal object returned by the matching propose operation.",
+    "duplicate_override": "Apply after explicitly reviewing all returned duplicate candidates.",
+    "reviewed_duplicate_paths": "Every duplicate candidate path reviewed before override.",
+    "metadata_changes": "Allowed retrieval, provenance, status, and verification metadata changes.",
     "mode": "Operation mode.",
     "section": "Markdown section heading to replace.",
     "apply": "Whether to write changes; false means dry-run.",
@@ -503,6 +633,27 @@ WORKBENCH_OUTPUT_SCHEMAS = {
         },
         ["path", "resolved_path", "content", "revision", "redirected"],
     ),
+    "propose_create": object_output_schema(
+        {
+            "proposal_id": {"type": "string"},
+            "kind": {"type": "string"},
+            "path": {"type": "string"},
+            "duplicate_candidates": {"type": "array", "items": {"type": "object"}},
+        },
+        ["proposal_id", "kind", "path", "duplicate_candidates"],
+    ),
+    "apply_create": object_output_schema(
+        {"proposal_id": {"type": "string"}, "path": {"type": "string"}, "revision": {"type": "string"}, "applied": {"type": "boolean"}},
+        ["proposal_id", "path", "revision", "applied"],
+    ),
+    "propose_update": object_output_schema(
+        {"proposal_id": {"type": "string"}, "path": {"type": "string"}, "expected_revision": {"type": "string"}, "diff": {"type": "string"}},
+        ["proposal_id", "path", "expected_revision", "diff"],
+    ),
+    "apply_update": object_output_schema(
+        {"proposal_id": {"type": "string"}, "path": {"type": "string"}, "revision": {"type": "string"}, "applied": {"type": "boolean"}},
+        ["proposal_id", "path", "revision", "applied"],
+    ),
     "create": object_output_schema(
         {"path": {"type": "string"}, "title": {"type": "string"}, "revision": {"type": "string"}},
         ["path", "title", "revision"],
@@ -522,6 +673,14 @@ WORKBENCH_OUTPUT_SCHEMAS = {
     "restore": object_output_schema(
         {"path": {"type": "string"}, "archived_path": {"type": "string"}, "revision": {"type": "string"}},
         ["path", "archived_path", "revision"],
+    ),
+    "mark_stale": object_output_schema(
+        {"path": {"type": "string"}, "revision": {"type": "string"}},
+        ["path", "revision"],
+    ),
+    "verify_note": object_output_schema(
+        {"path": {"type": "string"}, "revision": {"type": "string"}},
+        ["path", "revision"],
     ),
     "doctor": object_output_schema(
         {"fundus_root": {"type": "string"}, "index": {"type": "object"}},
@@ -570,11 +729,15 @@ def build_operation_registry(include_admin: bool = False) -> list[OperationSpec]
     workbench_definitions = [
         ("search", "Search Fundus", "Find current Fundus evidence in a project or area.", scan_fundus, True, False, True),
         ("read", "Read Fundus Note", "Read a note and return content with its SHA-256 revision.", read_note, True, False, True),
-        ("create", "Create Fundus Note", "Create a scoped Fundus note with retrieval metadata.", create_note, False, False, False),
-        ("update", "Update Fundus Note", "Append, replace a section, or rewrite a revision-checked note.", update_note, False, True, False),
+        ("propose_create", "Propose Fundus Create", "Plan a note and return duplicate candidates without writing.", propose_create, True, False, True),
+        ("apply_create", "Apply Fundus Create", "Apply an integrity-checked create proposal after duplicate review.", apply_create, False, False, False),
+        ("propose_update", "Propose Fundus Update", "Plan content and metadata changes with a deterministic diff.", propose_update, True, False, True),
+        ("apply_update", "Apply Fundus Update", "Apply a proposal only at its expected note revision.", apply_update, False, True, False),
         ("move", "Move Fundus Note", "Move a note while preserving identity and optionally leaving a redirect.", move_note, False, True, False),
         ("archive", "Archive Fundus Note", "Move one selected note into the recoverable Fundus archive.", archive_apply, False, True, False),
         ("restore", "Restore Fundus Note", "Restore one archived note to its validated active path.", archive_restore, False, False, False),
+        ("mark_stale", "Mark Fundus Note Stale", "Record that a note no longer matches current evidence.", mark_stale, False, False, False),
+        ("verify_note", "Verify Fundus Note", "Record current source evidence and verification provenance.", verify_note, False, False, False),
         ("doctor", "Diagnose Fundus", "Report resolved scope, configuration, index, lock, and path policy.", doctor, True, False, True),
     ]
     for name, title, description, handler, read_only, destructive, idempotent in workbench_definitions:
@@ -598,6 +761,26 @@ def build_operation_registry(include_admin: bool = False) -> list[OperationSpec]
                     deprecated=True,
                 )
             )
+
+    for name, title, handler, output_schema in [
+        ("create", "Deprecated: Create Fundus Note", create_note, WORKBENCH_OUTPUT_SCHEMAS["create"]),
+        ("create_note", "Deprecated: Create Fundus Note", create_note, WORKBENCH_OUTPUT_SCHEMAS["create"]),
+        ("update", "Deprecated: Update Fundus Note", update_note, WORKBENCH_OUTPUT_SCHEMAS["update"]),
+        ("update_note", "Deprecated: Update Fundus Note", update_note, WORKBENCH_OUTPUT_SCHEMAS["update"]),
+    ]:
+        registry.append(
+            make_operation(
+                name,
+                title,
+                "Deprecated immediate mutation alias; prefer proposal and apply operations.",
+                handler,
+                behavior_annotations(False, name.startswith("update"), False),
+                output_schema,
+                "compatibility",
+                listed=False,
+                deprecated=True,
+            )
+        )
 
     admin_definitions = [
         ("add_frontmatter", "Add Frontmatter", "Add typed frontmatter to an existing plain note.", add_frontmatter, False, True, False),

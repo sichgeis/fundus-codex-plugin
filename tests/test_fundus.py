@@ -1361,6 +1361,190 @@ class MutationSafetyTest(FundusTestCase):
         self.assertEqual(path.read_bytes(), current_bytes)
 
 
+class ProposalWorkflowTest(FundusTestCase):
+    def test_propose_create_is_read_only_and_apply_records_provenance(self) -> None:
+        before = sorted(str(path.relative_to(self.vault_path)) for path in self.vault_path.rglob("*"))
+
+        proposal = fundus.propose_create_document(
+            self.config,
+            "demo",
+            "Proposed Note",
+            "Body with API_KEY=secret-value",
+            ["domain"],
+            verified_against=["jira:BACKEND-2291", "github:org/repo@abc123"],
+            source_fingerprint="github:org/repo:path@sha256:1234",
+            verification_status="current",
+        )
+        repeated = fundus.propose_create_document(
+            self.config,
+            "demo",
+            "Proposed Note",
+            "Body with API_KEY=secret-value",
+            ["domain"],
+            verified_against=["jira:BACKEND-2291", "github:org/repo@abc123"],
+            source_fingerprint="github:org/repo:path@sha256:1234",
+            verification_status="current",
+        )
+
+        after_proposal = sorted(str(path.relative_to(self.vault_path)) for path in self.vault_path.rglob("*"))
+        self.assertEqual(after_proposal, before)
+        self.assertEqual(proposal["kind"], "create")
+        self.assertEqual(repeated["proposal_id"], proposal["proposal_id"])
+        self.assertEqual(repeated["diff"], proposal["diff"])
+        self.assertTrue(proposal["proposal_id"].startswith("sha256:"))
+        self.assertIn("CONTENT_REDACTED", proposal["warnings"])
+        self.assertFalse(proposal["duplicate_candidates"])
+
+        applied = fundus.apply_create_proposal(self.config, proposal)
+        frontmatter, body = fundus.parse_frontmatter((self.vault_path / applied["path"]).read_text())
+
+        self.assertTrue(applied["applied"])
+        self.assertEqual(frontmatter["verification_status"], "current")
+        self.assertEqual(frontmatter["verified_against"], ["jira:BACKEND-2291", "github:org/repo@abc123"])
+        self.assertEqual(frontmatter["source_fingerprint"], "github:org/repo:path@sha256:1234")
+        self.assertIn("API_KEY: [REDACTED]", body)
+
+    def test_duplicate_signals_require_reviewed_override(self) -> None:
+        existing = fundus.create_document(
+            self.config,
+            "demo",
+            "Prompt Boundary",
+            "BACKEND-2291 prompt authoring boundary.",
+            ["domain"],
+            document_id="domain/prompt-boundary",
+            aliases=["Shared Alias", "BACKEND-2291"],
+            resource="https://jira.example/BACKEND-2291",
+        )
+        proposal = fundus.propose_create_document(
+            self.config,
+            "demo",
+            "Prompt Boundary Copy",
+            "BACKEND-2291 prompt authoring boundary details.",
+            ["domain"],
+            document_id="domain/prompt-boundary",
+            aliases=["Shared Alias"],
+            resource="https://jira.example/BACKEND-2291",
+        )
+        candidate = proposal["duplicate_candidates"][0]
+
+        self.assertEqual(candidate["path"], existing["path"])
+        self.assertIn("id", candidate["reasons"])
+        self.assertIn("alias", candidate["reasons"])
+        self.assertIn("resource", candidate["reasons"])
+        self.assertIn("ticket:BACKEND-2291", candidate["reasons"])
+        with self.assertRaises(fundus.FundusError) as blocked:
+            fundus.apply_create_proposal(self.config, proposal)
+        with self.assertRaises(fundus.FundusError):
+            fundus.apply_create_proposal(self.config, proposal, True, ["Fundus/demo/not-reviewed.md"])
+        self.assertEqual(blocked.exception.code, "DUPLICATE_REVIEW_REQUIRED")
+
+        applied = fundus.apply_create_proposal(self.config, proposal, True, [str(existing["path"])])
+        self.assertTrue((self.vault_path / applied["path"]).exists())
+
+    def test_high_confidence_similarity_is_a_duplicate_signal(self) -> None:
+        fundus.create_document(self.config, "demo", "Payment Authorization Flow", "Body", ["domain"])
+
+        proposal = fundus.propose_create_document(
+            self.config,
+            "demo",
+            "Payment Authorisation Flow",
+            "Different body",
+            ["domain"],
+        )
+
+        self.assertEqual(proposal["duplicate_candidates"][0]["reasons"], ["high_confidence_similarity"])
+
+    def test_update_proposals_cover_modes_metadata_and_stale_rejection(self) -> None:
+        created = fundus.create_document(
+            self.config,
+            "demo",
+            "Update Proposal",
+            "## Context\n\nOriginal.\n\n## Tail\n\nKeep.",
+            ["ticket"],
+        )
+        proposals = {
+            "append": fundus.propose_update_document(
+                self.config,
+                str(created["path"]),
+                "append",
+                "## Added\n\nAppend body.",
+                metadata_changes={
+                    "verified_against": ["jira:BACKEND-1"],
+                    "source_fingerprint": "jira:BACKEND-1@v2",
+                    "verification_status": "current",
+                },
+            ),
+            "replace": fundus.propose_update_document(
+                self.config,
+                str(created["path"]),
+                "replace",
+                "Replaced context.",
+                "Context",
+            ),
+            "rewrite": fundus.propose_update_document(
+                self.config,
+                str(created["path"]),
+                "rewrite",
+                "Complete replacement.",
+            ),
+        }
+
+        for mode, proposal in proposals.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(proposal["request"]["mode"], mode)
+                self.assertIn("---", proposal["diff"])
+                self.assertTrue(proposal["expected_revision"].startswith("sha256:"))
+
+        applied = fundus.apply_update_proposal(self.config, proposals["append"])
+        frontmatter, body = fundus.parse_frontmatter((self.vault_path / str(created["path"])).read_text())
+        self.assertTrue(applied["applied"])
+        self.assertIn("Append body.", body)
+        self.assertEqual(frontmatter["verification_status"], "current")
+        self.assertEqual(frontmatter["source_fingerprint"], "jira:BACKEND-1@v2")
+
+        stale_proposal = fundus.propose_update_document(
+            self.config,
+            str(created["path"]),
+            "rewrite",
+            "Agent replacement",
+        )
+        path = self.vault_path / str(created["path"])
+        path.write_text(path.read_text() + "\nHuman edit.\n")
+        human_bytes = path.read_bytes()
+        with self.assertRaises(fundus.FundusError) as conflict:
+            fundus.apply_update_proposal(self.config, stale_proposal)
+        self.assertEqual(conflict.exception.code, "REVISION_CONFLICT")
+        self.assertEqual(path.read_bytes(), human_bytes)
+
+    def test_proposal_integrity_and_verification_lifecycle(self) -> None:
+        proposal = fundus.propose_create_document(self.config, "demo", "Integrity", "Body", [])
+        proposal["request"]["title"] = "Tampered"
+        with self.assertRaises(fundus.FundusError) as invalid:
+            fundus.apply_create_proposal(self.config, proposal)
+        self.assertEqual(invalid.exception.code, "PROPOSAL_INVALID")
+
+        created = fundus.create_document(self.config, "demo", "Lifecycle", "Body", [])
+        stale = fundus.mark_note_stale(self.config, str(created["path"]), "Source changed", str(created["revision"]))
+        stale_frontmatter, _ = fundus.parse_frontmatter((self.vault_path / str(created["path"])).read_text())
+        self.assertEqual(stale_frontmatter["verification_status"], "stale")
+        self.assertEqual(stale_frontmatter["stale_reason"], "Source changed")
+
+        verified = fundus.verify_note(
+            self.config,
+            str(created["path"]),
+            ["github:org/repo@abc"],
+            "github:org/repo:path@sha256:def",
+            stale["revision"],
+        )
+        verified_frontmatter, _ = fundus.parse_frontmatter((self.vault_path / str(created["path"])).read_text())
+        search = fundus.scan_documents(self.config, "demo", "Lifecycle")
+        self.assertEqual(verified_frontmatter["verification_status"], "current")
+        self.assertNotIn("stale_reason", verified_frontmatter)
+        self.assertEqual(search[0]["verification_status"], "current")
+        self.assertEqual(search[0]["source_fingerprint"], "github:org/repo:path@sha256:def")
+        self.assertTrue(verified["revision"].startswith("sha256:"))
+
+
 class MigrationTest(FundusTestCase):
     def setUp(self) -> None:
         super().setUp()

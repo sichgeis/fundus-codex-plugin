@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import difflib
 import functools
 import hashlib
 import io
@@ -45,9 +46,10 @@ DEFAULT_CONFIG = {
     },
 }
 INDEX_FILENAME = ".fundus-index.json"
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
+MAX_PROPOSAL_DIFF_CHARS = 12000
 ARCHIVE_DIRNAME = "_archive"
 BACKUP_DIRNAME = ".fundus-backups"
 JOURNAL_DIRNAME = ".fundus-journal"
@@ -461,6 +463,10 @@ FRONTMATTER_ORDER = [
         "status",
         "owner",
         "last_verified",
+        "verified_against",
+        "source_fingerprint",
+        "verification_status",
+        "stale_reason",
         "archived",
         "archived_at",
         "archived_reason",
@@ -592,6 +598,14 @@ def read_content_arg(content: str | None, content_file: str | None) -> str:
         path = Path(content_file).expanduser()
         return path.read_text()
     return content or ""
+
+
+def read_json_object_file(path_arg: str) -> dict[str, Any]:
+    path = Path(path_arg).expanduser()
+    value = load_json(path)
+    if not isinstance(value, dict):
+        raise FundusError(f"Expected a JSON object in {path}.", "INVALID_ARGUMENT")
+    return value
 
 
 def normalize_tags(config: Config, project_name: str, extra_tags: list[str] | None) -> list[str]:
@@ -1264,6 +1278,9 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
             str(doc.frontmatter.get("status") or ""),
             str(doc.frontmatter.get("owner") or ""),
             str(doc.frontmatter.get("last_verified") or ""),
+            str(doc.frontmatter.get("verification_status") or ""),
+            str(doc.frontmatter.get("source_fingerprint") or ""),
+            " ".join(frontmatter_list(doc.frontmatter.get("verified_against"))),
             " ".join(frontmatter_list(doc.frontmatter.get("projects"))),
             " ".join(frontmatter_list(doc.frontmatter.get("repos"))),
         ]
@@ -1299,6 +1316,10 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
         "status": doc.frontmatter.get("status"),
         "owner": doc.frontmatter.get("owner"),
         "last_verified": doc.frontmatter.get("last_verified"),
+        "verification_status": doc.frontmatter.get("verification_status") or "unverified",
+        "source_fingerprint": doc.frontmatter.get("source_fingerprint"),
+        "verified_against": frontmatter_list(doc.frontmatter.get("verified_against")),
+        "stale_reason": doc.frontmatter.get("stale_reason"),
         "projects": frontmatter_list(doc.frontmatter.get("projects")),
         "repos": frontmatter_list(doc.frontmatter.get("repos")),
         "updated": doc.updated,
@@ -1516,6 +1537,10 @@ def present_index_entry(entry: dict[str, Any], score: int | None = None, reason:
         payload["resource"] = entry.get("resource")
     if entry.get("last_verified"):
         payload["last_verified"] = entry.get("last_verified")
+    if entry.get("verification_status"):
+        payload["verification_status"] = entry.get("verification_status")
+    if entry.get("source_fingerprint"):
+        payload["source_fingerprint"] = entry.get("source_fingerprint")
     if entry.get("archived"):
         payload["archived"] = True
         payload["original_path"] = entry.get("original_path")
@@ -1764,6 +1789,9 @@ def frontmatter_for_new_document(
     status: str | None = None,
     owner: str | None = None,
     last_verified: str | None = None,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    verification_status: str | None = None,
 ) -> dict[str, Any]:
     timestamp = now_iso()
     scope_project = scope.path if scope.kind == "project" else project_name
@@ -1778,6 +1806,7 @@ def frontmatter_for_new_document(
         "updated": timestamp,
         "timestamp": timestamp,
         "tags": normalize_scope_tags(config, scope_project, scope, extra_tags),
+        "verification_status": (verification_status or "unverified").strip() or "unverified",
     }
     if scope.kind == "project":
         frontmatter["project"] = scope_project
@@ -1792,6 +1821,11 @@ def frontmatter_for_new_document(
         frontmatter["owner"] = owner.strip()
     if last_verified and last_verified.strip():
         frontmatter["last_verified"] = last_verified.strip()
+    clean_verified_against = [value.strip() for value in verified_against or [] if value.strip()]
+    if clean_verified_against:
+        frontmatter["verified_against"] = clean_verified_against
+    if source_fingerprint and source_fingerprint.strip():
+        frontmatter["source_fingerprint"] = source_fingerprint.strip()
     return frontmatter
 
 
@@ -1811,6 +1845,9 @@ def create_document(
     status: str | None = None,
     owner: str | None = None,
     last_verified: str | None = None,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    verification_status: str | None = None,
 ) -> dict[str, Any]:
     requested_scope = scope or project_scope(project_name)
     project_dir = fundus_scope_dir(config, requested_scope)
@@ -1835,6 +1872,9 @@ def create_document(
         status,
         owner,
         last_verified,
+        verified_against,
+        source_fingerprint,
+        verification_status,
     )
     content = render_document(frontmatter, redact_secrets(body, config))
     atomic_write(path, content)
@@ -1892,6 +1932,44 @@ def replace_section(existing_body: str, section: str, new_content: str) -> str:
     return "\n".join(updated_lines).strip()
 
 
+ALLOWED_METADATA_UPDATE_FIELDS = {
+    "aliases",
+    "description",
+    "last_verified",
+    "owner",
+    "resource",
+    "source_fingerprint",
+    "stale_reason",
+    "status",
+    "verification_status",
+    "verified_against",
+}
+
+
+def apply_metadata_changes(frontmatter: dict[str, Any], metadata_changes: dict[str, Any] | None) -> None:
+    for key, value in (metadata_changes or {}).items():
+        if key not in ALLOWED_METADATA_UPDATE_FIELDS:
+            raise FundusError(f"Metadata field cannot be changed through update proposals: {key}", "METADATA_FIELD_INVALID")
+        if value is None or value == "" or value == []:
+            frontmatter.pop(key, None)
+            continue
+        if key == "verification_status" and value not in {"current", "stale", "unverified"}:
+            raise FundusError("verification_status must be current, stale, or unverified.", "METADATA_FIELD_INVALID")
+        frontmatter[key] = normalize_frontmatter_value(key, value)
+
+
+def updated_body_for_mode(body: str, mode: str, new_content: str, section: str | None) -> str:
+    if mode == "append":
+        return append_body(body, new_content)
+    if mode == "replace":
+        if not section:
+            raise FundusError("--section is required when mode is replace.")
+        return replace_section(body, section, new_content)
+    if mode == "rewrite":
+        return new_content.strip()
+    raise FundusError(f"Unknown update mode: {mode}")
+
+
 @serialized_mutation
 def update_document(
     config: Config,
@@ -1902,6 +1980,7 @@ def update_document(
     section: str | None,
     scope: Scope | None = None,
     expected_revision: str | None = None,
+    metadata_changes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path = resolve_active_note_path(config, path_arg)
     if not path.exists():
@@ -1914,21 +1993,13 @@ def update_document(
         raise FundusError(f"Document is missing expected frontmatter: {path}")
 
     redacted_content = redact_secrets(new_content, config)
-    if mode == "append":
-        updated_body = append_body(body, redacted_content)
-    elif mode == "replace":
-        if not section:
-            raise FundusError("--section is required when mode is replace.")
-        updated_body = replace_section(body, section, redacted_content)
-    elif mode == "rewrite":
-        updated_body = redacted_content.strip()
-    else:
-        raise FundusError(f"Unknown update mode: {mode}")
+    updated_body = updated_body_for_mode(body, mode, redacted_content, section)
 
     frontmatter["updated"] = now_iso()
     frontmatter["timestamp"] = frontmatter["updated"]
     classification = classify_document_scope(config, path, frontmatter)
     apply_canonical_scope_metadata(config, frontmatter, classification)
+    apply_metadata_changes(frontmatter, metadata_changes)
 
     rendered = render_existing_document(frontmatter, updated_body)
     atomic_write(path, rendered)
@@ -1986,6 +2057,403 @@ def read_document_result(config: Config, path_arg: str) -> dict[str, Any]:
 def read_document(config: Config, path_arg: str) -> str:
     """Compatibility helper returning only content; operation surfaces use read_document_result."""
     return str(read_document_result(config, path_arg)["content"])
+
+
+def proposal_digest(kind: str, request: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        {"kind": kind, "request": request},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
+def body_diff(before: str, after: str, path: str) -> str:
+    rendered = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
+    if len(rendered) <= MAX_PROPOSAL_DIFF_CHARS:
+        return rendered
+    return f"{rendered[:MAX_PROPOSAL_DIFF_CHARS]}\n... diff truncated by Fundus ...\n"
+
+
+def duplicate_candidates(
+    config: Config,
+    proposed: dict[str, Any],
+    exclude_path: str | None = None,
+) -> list[dict[str, Any]]:
+    proposed_title = str(proposed.get("title") or "").strip()
+    proposed_id = str(proposed.get("id") or "").strip()
+    proposed_aliases = {value.casefold() for value in frontmatter_list(proposed.get("aliases"))}
+    proposed_resource = str(proposed.get("resource") or "").strip().casefold()
+    proposed_text = " ".join(
+        [
+            proposed_title,
+            str(proposed.get("description") or ""),
+            " ".join(proposed_aliases),
+            proposed_resource,
+            str(proposed.get("body") or ""),
+        ]
+    )
+    proposed_tickets = set(extract_ticket_ids(proposed_text))
+    proposed_tokens = set(tokenize(f"{proposed_title} {proposed.get('description') or ''}"))
+    candidates: list[dict[str, Any]] = []
+    for path in iter_fundus_markdown_paths(config):
+        doc = load_document(path, config.vault_path)
+        record = index_entry_for_document(config, doc)
+        if record.get("archived") or record.get("kind") in {"redirect", "reserved"}:
+            continue
+        if exclude_path and record.get("path") == exclude_path:
+            continue
+        reasons: list[str] = []
+        if proposed_title and proposed_title.casefold() == str(record.get("title") or "").casefold():
+            reasons.append("title")
+        if proposed_id and proposed_id == str(record.get("id") or ""):
+            reasons.append("id")
+        record_aliases = {value.casefold() for value in frontmatter_list(record.get("aliases"))}
+        if proposed_aliases.intersection(record_aliases):
+            reasons.append("alias")
+        if proposed_resource and proposed_resource == str(record.get("resource") or "").casefold():
+            reasons.append("resource")
+        shared_tickets = sorted(proposed_tickets.intersection(set(record.get("ticket_ids") or [])))
+        if shared_tickets:
+            reasons.extend(f"ticket:{ticket}" for ticket in shared_tickets)
+        record_tokens = set(tokenize(f"{record.get('title') or ''} {record.get('description') or ''}"))
+        union = proposed_tokens.union(record_tokens)
+        similarity = len(proposed_tokens.intersection(record_tokens)) / len(union) if union else 0.0
+        title_similarity = difflib.SequenceMatcher(
+            None,
+            proposed_title.casefold(),
+            str(record.get("title") or "").casefold(),
+        ).ratio()
+        if not reasons and (similarity >= 0.8 or title_similarity >= 0.9):
+            reasons.append("high_confidence_similarity")
+        if reasons:
+            candidates.append(
+                {
+                    "path": record.get("path"),
+                    "id": record.get("id"),
+                    "title": record.get("title"),
+                    "reasons": reasons,
+                    "confidence": "high",
+                    "similarity": round(max(similarity, title_similarity), 3),
+                }
+            )
+    return sorted(candidates, key=lambda candidate: str(candidate.get("path") or ""))
+
+
+def require_duplicate_review(
+    candidates: list[dict[str, Any]],
+    duplicate_override: bool,
+    reviewed_duplicate_paths: list[str] | None,
+) -> None:
+    if not candidates:
+        return
+    candidate_paths = {str(candidate.get("path") or "") for candidate in candidates}
+    reviewed_paths = {str(path) for path in reviewed_duplicate_paths or []}
+    if not duplicate_override or not candidate_paths.issubset(reviewed_paths):
+        raise FundusError(
+            "Duplicate candidates require explicit override after reviewing every candidate path.",
+            "DUPLICATE_REVIEW_REQUIRED",
+        )
+
+
+def scope_from_proposal_request(request: dict[str, Any]) -> Scope:
+    scope_kind = str(request.get("scope") or "")
+    scope_path = str(request.get("scope_path") or "")
+    if scope_kind == "project":
+        return project_scope(scope_path)
+    if scope_kind == "area":
+        return area_scope(scope_path)
+    raise FundusError("Proposal scope is invalid.", "PROPOSAL_INVALID")
+
+
+def propose_create_document(
+    config: Config,
+    project_name: str,
+    title: str,
+    body: str,
+    extra_tags: list[str] | None,
+    scope: Scope | None = None,
+    doc_type: str | None = None,
+    description: str | None = None,
+    document_id: str | None = None,
+    aliases: list[str] | None = None,
+    resource: str | None = None,
+    status: str | None = None,
+    owner: str | None = None,
+    last_verified: str | None = None,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    verification_status: str | None = None,
+) -> dict[str, Any]:
+    active_scope = scope or project_scope(project_name)
+    redacted_body = redact_secrets(body, config)
+    request = {
+        "project_name": project_name,
+        "scope": active_scope.kind,
+        "scope_path": active_scope.path,
+        "title": title.strip(),
+        "body": redacted_body,
+        "tags": list(extra_tags or []),
+        "doc_type": doc_type,
+        "description": description,
+        "document_id": document_id,
+        "aliases": list(aliases or []),
+        "resource": resource,
+        "status": status,
+        "owner": owner,
+        "last_verified": last_verified,
+        "verified_against": list(verified_against or []),
+        "source_fingerprint": source_fingerprint,
+        "verification_status": verification_status or "unverified",
+    }
+    proposed_id = (document_id or default_document_id(active_scope, title)).strip()
+    proposed = {
+        "title": title,
+        "description": description or title,
+        "id": proposed_id,
+        "aliases": aliases or [],
+        "resource": resource,
+        "body": redacted_body,
+    }
+    path = fundus_scope_dir(config, active_scope) / f"{slugify(title)}.md"
+    relative_path = str(path.relative_to(config.vault_path))
+    duplicates = duplicate_candidates(config, proposed)
+    return {
+        "proposal_version": 1,
+        "kind": "create",
+        "proposal_id": proposal_digest("create", request),
+        "path": relative_path,
+        "scope": active_scope.kind,
+        "scope_path": active_scope.path,
+        "request": request,
+        "diff": body_diff("", redacted_body, relative_path),
+        "duplicate_candidates": duplicates,
+        "requires_duplicate_override": bool(duplicates),
+        "warnings": ["CONTENT_REDACTED"] if redacted_body != body else [],
+    }
+
+
+@serialized_mutation
+def apply_create_proposal(
+    config: Config,
+    proposal: dict[str, Any],
+    duplicate_override: bool = False,
+    reviewed_duplicate_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    if proposal.get("kind") != "create" or not isinstance(proposal.get("request"), dict):
+        raise FundusError("Expected a create proposal.", "PROPOSAL_INVALID")
+    request = dict(proposal["request"])
+    if proposal.get("proposal_id") != proposal_digest("create", request):
+        raise FundusError("Create proposal integrity check failed.", "PROPOSAL_INVALID")
+    regenerated = propose_create_document(
+        config,
+        str(request["project_name"]),
+        str(request["title"]),
+        str(request["body"]),
+        list(request.get("tags") or []),
+        scope_from_proposal_request(request),
+        request.get("doc_type"),
+        request.get("description"),
+        request.get("document_id"),
+        list(request.get("aliases") or []),
+        request.get("resource"),
+        request.get("status"),
+        request.get("owner"),
+        request.get("last_verified"),
+        list(request.get("verified_against") or []),
+        request.get("source_fingerprint"),
+        request.get("verification_status"),
+    )
+    require_duplicate_review(regenerated["duplicate_candidates"], duplicate_override, reviewed_duplicate_paths)
+    result = create_document(
+        config,
+        str(request["project_name"]),
+        str(request["title"]),
+        str(request["body"]),
+        list(request.get("tags") or []),
+        scope_from_proposal_request(request),
+        request.get("doc_type"),
+        request.get("description"),
+        request.get("document_id"),
+        list(request.get("aliases") or []),
+        request.get("resource"),
+        request.get("status"),
+        request.get("owner"),
+        request.get("last_verified"),
+        list(request.get("verified_against") or []),
+        request.get("source_fingerprint"),
+        request.get("verification_status"),
+    )
+    return {"proposal_id": proposal["proposal_id"], "applied": True, **result}
+
+
+def propose_update_document(
+    config: Config,
+    path_arg: str,
+    mode: str,
+    new_content: str,
+    section: str | None = None,
+    metadata_changes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    path = resolve_active_note_path(config, path_arg)
+    if not path.exists():
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    expected_revision = path_revision(path)
+    frontmatter, body = parse_frontmatter(read_note_text(path))
+    if not frontmatter:
+        raise FundusError(f"Document is missing expected frontmatter: {path}")
+    redacted_content = redact_secrets(new_content, config)
+    proposed_body = updated_body_for_mode(body, mode, redacted_content, section)
+    proposed_frontmatter = clone_frontmatter(frontmatter)
+    apply_metadata_changes(proposed_frontmatter, metadata_changes)
+    request = {
+        "path": str(path.relative_to(config.vault_path)),
+        "mode": mode,
+        "content": redacted_content,
+        "section": section,
+        "metadata_changes": metadata_changes or {},
+        "expected_revision": expected_revision,
+    }
+    duplicates = duplicate_candidates(
+        config,
+        {
+            "title": proposed_frontmatter.get("title"),
+            "description": proposed_frontmatter.get("description"),
+            "id": proposed_frontmatter.get("id"),
+            "aliases": proposed_frontmatter.get("aliases"),
+            "resource": proposed_frontmatter.get("resource"),
+            "body": proposed_body,
+        },
+        exclude_path=request["path"],
+    )
+    return {
+        "proposal_version": 1,
+        "kind": "update",
+        "proposal_id": proposal_digest("update", request),
+        "path": request["path"],
+        "expected_revision": expected_revision,
+        "request": request,
+        "diff": body_diff(body, proposed_body, request["path"]),
+        "metadata_changes": metadata_changes or {},
+        "duplicate_candidates": duplicates,
+        "requires_duplicate_override": bool(duplicates),
+        "warnings": ["CONTENT_REDACTED"] if redacted_content != new_content else [],
+    }
+
+
+@serialized_mutation
+def apply_update_proposal(
+    config: Config,
+    proposal: dict[str, Any],
+    duplicate_override: bool = False,
+    reviewed_duplicate_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    if proposal.get("kind") != "update" or not isinstance(proposal.get("request"), dict):
+        raise FundusError("Expected an update proposal.", "PROPOSAL_INVALID")
+    request = dict(proposal["request"])
+    if proposal.get("proposal_id") != proposal_digest("update", request):
+        raise FundusError("Update proposal integrity check failed.", "PROPOSAL_INVALID")
+    path = resolve_active_note_path(config, str(request.get("path") or ""))
+    if not path.exists():
+        raise FundusError(f"Document does not exist: {request.get('path')}", "NOTE_NOT_FOUND")
+    assert_expected_revision(path, str(request.get("expected_revision") or ""))
+    regenerated = propose_update_document(
+        config,
+        str(request["path"]),
+        str(request["mode"]),
+        str(request["content"]),
+        request.get("section"),
+        dict(request.get("metadata_changes") or {}),
+    )
+    if regenerated["proposal_id"] != proposal["proposal_id"]:
+        raise FundusError("Update proposal no longer matches current state.", "REVISION_CONFLICT")
+    require_duplicate_review(regenerated["duplicate_candidates"], duplicate_override, reviewed_duplicate_paths)
+    result = update_document(
+        config,
+        "",
+        str(request["path"]),
+        str(request["mode"]),
+        str(request["content"]),
+        request.get("section"),
+        None,
+        str(request["expected_revision"]),
+        dict(request.get("metadata_changes") or {}),
+    )
+    return {"proposal_id": proposal["proposal_id"], "applied": True, "diff": proposal.get("diff") or "", **result}
+
+
+@serialized_mutation
+def update_note_metadata(
+    config: Config,
+    path_arg: str,
+    metadata_changes: dict[str, Any],
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
+    path = resolve_active_note_path(config, path_arg)
+    if not path.exists():
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(path, expected_revision)
+    frontmatter, body = parse_frontmatter(read_note_text(path))
+    if not frontmatter:
+        raise FundusError(f"Document is missing expected frontmatter: {path}")
+    apply_metadata_changes(frontmatter, metadata_changes)
+    frontmatter["updated"] = now_iso()
+    frontmatter["timestamp"] = frontmatter["updated"]
+    atomic_write(path, render_existing_document_preserving_body(frontmatter, body))
+    refresh_index_entry(config, path)
+    return {
+        "path": str(path.relative_to(config.vault_path)),
+        "metadata_changes": metadata_changes,
+        "previous_revision": previous_revision,
+        "revision": path_revision(path),
+    }
+
+
+def mark_note_stale(
+    config: Config,
+    path_arg: str,
+    reason: str,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
+    if not reason.strip():
+        raise FundusError("A stale reason is required.", "METADATA_FIELD_INVALID")
+    return update_note_metadata(
+        config,
+        path_arg,
+        {"status": "stale", "verification_status": "stale", "stale_reason": reason.strip()},
+        expected_revision,
+    )
+
+
+def verify_note(
+    config: Config,
+    path_arg: str,
+    verified_against: list[str] | None = None,
+    source_fingerprint: str | None = None,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
+    if not verified_against and not (source_fingerprint and source_fingerprint.strip()):
+        raise FundusError("Verification requires verified_against or source_fingerprint evidence.", "VERIFICATION_EVIDENCE_REQUIRED")
+    changes: dict[str, Any] = {
+        "status": "active",
+        "verification_status": "current",
+        "last_verified": datetime.now().astimezone().date().isoformat(),
+        "stale_reason": None,
+    }
+    if verified_against:
+        changes["verified_against"] = verified_against
+    if source_fingerprint:
+        changes["source_fingerprint"] = source_fingerprint
+    return update_note_metadata(config, path_arg, changes, expected_revision)
 
 
 def filesystem_timestamp(path: Path) -> str:
@@ -3306,6 +3774,29 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--content-file", help="Path to a markdown file containing the body content.")
     create_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
 
+    propose_create_parser = subparsers.add_parser("propose-create", help="Plan a create and report duplicate candidates without writing.")
+    add_area_argument(propose_create_parser)
+    propose_create_parser.add_argument("--title", required=True)
+    propose_create_parser.add_argument("--type", dest="doc_type")
+    propose_create_parser.add_argument("--description")
+    propose_create_parser.add_argument("--id", dest="document_id")
+    propose_create_parser.add_argument("--alias", action="append", dest="aliases")
+    propose_create_parser.add_argument("--resource")
+    propose_create_parser.add_argument("--status")
+    propose_create_parser.add_argument("--owner")
+    propose_create_parser.add_argument("--last-verified")
+    propose_create_parser.add_argument("--verified-against", action="append", dest="verified_against")
+    propose_create_parser.add_argument("--source-fingerprint")
+    propose_create_parser.add_argument("--verification-status", choices=["current", "stale", "unverified"])
+    propose_create_parser.add_argument("--content")
+    propose_create_parser.add_argument("--content-file")
+    propose_create_parser.add_argument("--tag", action="append", dest="tags")
+
+    apply_create_parser = subparsers.add_parser("apply-create", help="Apply a create proposal after duplicate review.")
+    apply_create_parser.add_argument("--proposal-file", required=True)
+    apply_create_parser.add_argument("--duplicate-override", action="store_true")
+    apply_create_parser.add_argument("--reviewed-duplicate", action="append", dest="reviewed_duplicate_paths")
+
     update_parser = subparsers.add_parser("update", help="Append to, replace a section in, or rewrite a document.")
     add_area_argument(update_parser)
     update_parser.add_argument("--path", required=True, help="Fundus document path relative to the vault root.")
@@ -3314,6 +3805,30 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--content", help="Inline markdown content.")
     update_parser.add_argument("--content-file", help="Path to a markdown file containing the new content.")
     update_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
+
+    propose_update_parser = subparsers.add_parser("propose-update", help="Plan a revision-bound note update without writing.")
+    propose_update_parser.add_argument("--path", required=True)
+    propose_update_parser.add_argument("--mode", required=True, choices=["append", "replace", "rewrite"])
+    propose_update_parser.add_argument("--section")
+    propose_update_parser.add_argument("--content")
+    propose_update_parser.add_argument("--content-file")
+    propose_update_parser.add_argument("--metadata-file", help="JSON object containing allowed metadata changes.")
+
+    apply_update_parser = subparsers.add_parser("apply-update", help="Apply an update proposal at its expected revision.")
+    apply_update_parser.add_argument("--proposal-file", required=True)
+    apply_update_parser.add_argument("--duplicate-override", action="store_true")
+    apply_update_parser.add_argument("--reviewed-duplicate", action="append", dest="reviewed_duplicate_paths")
+
+    mark_stale_parser = subparsers.add_parser("mark-stale", help="Record that a note no longer matches current evidence.")
+    mark_stale_parser.add_argument("--path", required=True)
+    mark_stale_parser.add_argument("--reason", required=True)
+    mark_stale_parser.add_argument("--expected-revision")
+
+    verify_note_parser = subparsers.add_parser("verify-note", help="Record current source evidence for a note.")
+    verify_note_parser.add_argument("--path", required=True)
+    verify_note_parser.add_argument("--verified-against", action="append", dest="verified_against")
+    verify_note_parser.add_argument("--source-fingerprint")
+    verify_note_parser.add_argument("--expected-revision")
 
     frontmatter_parser = subparsers.add_parser("add-frontmatter", help="Add generated frontmatter to an existing plain Markdown note.")
     add_area_argument(frontmatter_parser)
@@ -3444,6 +3959,97 @@ def main() -> int:
 
         if args.command == "read":
             print(json.dumps(read_document_result(config, args.path), indent=2))
+            return 0
+
+        if args.command == "propose-create":
+            content = read_content_arg(args.content, args.content_file)
+            proposal = propose_create_document(
+                config,
+                project_name,
+                args.title,
+                content,
+                args.tags,
+                scope,
+                args.doc_type,
+                args.description,
+                args.document_id,
+                args.aliases,
+                args.resource,
+                args.status,
+                args.owner,
+                args.last_verified,
+                args.verified_against,
+                args.source_fingerprint,
+                args.verification_status,
+            )
+            print(json.dumps(proposal, indent=2))
+            return 0
+
+        if args.command == "apply-create":
+            proposal = read_json_object_file(args.proposal_file)
+            print(
+                json.dumps(
+                    apply_create_proposal(
+                        config,
+                        proposal,
+                        args.duplicate_override,
+                        args.reviewed_duplicate_paths,
+                    ),
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.command == "propose-update":
+            content = read_content_arg(args.content, args.content_file)
+            metadata_changes = read_json_object_file(args.metadata_file) if args.metadata_file else None
+            print(
+                json.dumps(
+                    propose_update_document(
+                        config,
+                        args.path,
+                        args.mode,
+                        content,
+                        args.section,
+                        metadata_changes,
+                    ),
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.command == "apply-update":
+            proposal = read_json_object_file(args.proposal_file)
+            print(
+                json.dumps(
+                    apply_update_proposal(
+                        config,
+                        proposal,
+                        args.duplicate_override,
+                        args.reviewed_duplicate_paths,
+                    ),
+                    indent=2,
+                )
+            )
+            return 0
+
+        if args.command == "mark-stale":
+            print(json.dumps(mark_note_stale(config, args.path, args.reason, args.expected_revision), indent=2))
+            return 0
+
+        if args.command == "verify-note":
+            print(
+                json.dumps(
+                    verify_note(
+                        config,
+                        args.path,
+                        args.verified_against,
+                        args.source_fingerprint,
+                        args.expected_revision,
+                    ),
+                    indent=2,
+                )
+            )
             return 0
 
         if args.command == "create":
