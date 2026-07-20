@@ -60,6 +60,18 @@ The expected near-term scale is hundreds to low thousands of notes. The index re
 - Incremental refresh and locking are required.
 - Performance must be measured before changing storage technology.
 
+## D4a — Cross-scope retrieval
+
+**Decision:** Keep current-scope search as the default and add explicit corpus mode to the existing search operation.
+
+MCP uses `search_scope: current | corpus`; CLI uses `scan --global` for corpus mode. Corpus retrieval reuses the index records and scorer, retains every result's logical scope, and applies only a small inferred-current-scope preference. No embeddings, graph database, or separate MCP tool is introduced.
+
+**Consequences:**
+
+- Jira, Epic, Domain, capability, decision, and cross-repository work can discover related evidence without manually enumerating scopes.
+- Scoped callers remain backward compatible.
+- Relationship quality is diagnosed separately through a read-only, suggestion-only CLI audit.
+
 ## D5 — Scope semantics
 
 **Decision:** `scope_path` identifies the logical scope root, not the physical subfolder.

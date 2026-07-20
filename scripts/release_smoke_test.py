@@ -130,6 +130,32 @@ def main() -> int:
         update_path.write_text(json.dumps(update_proposal))
         updated = run_cli(project_root, env, "apply-update", "--proposal-file", str(update_path))
 
+        area_created = run_cli(
+            project_root,
+            env,
+            "create",
+            "--area",
+            "Epics/Release Readiness",
+            "--title",
+            "Release Readiness Epic",
+            "--alias",
+            "SMOKE-200",
+            "--content",
+            "Parent Epic for SMOKE-200 delivery in release-smoke.",
+        )
+        corpus_search = run_cli(project_root, env, "scan", "--global", "--query", "SMOKE-200")
+        invalid_corpus_area = run_cli_error(
+            project_root,
+            env,
+            "scan",
+            "--area",
+            "Epics/Release Readiness",
+            "--global",
+            "--query",
+            "SMOKE-200",
+        )
+        relationship_audit = run_cli(project_root, env, "relationships", "audit")
+
         destination = "Fundus/Epics/Release Readiness/references/release-smoke.md"
         moved = run_cli(project_root, env, "move", "--from", note_path, "--to", destination)
         archived = run_cli(project_root, env, "archive", "apply", "--path", destination, "--reason", "smoke")
@@ -139,6 +165,14 @@ def main() -> int:
 
         if not search["documents"] or search["documents"][0]["path"] != note_path:
             raise RuntimeError("release smoke search did not retrieve the created note")
+        if {item["path"] for item in corpus_search["documents"]} != {note_path, area_created["path"]}:
+            raise RuntimeError("release smoke corpus search did not retrieve both logical scopes")
+        if corpus_search["scope"] != "corpus" or corpus_search["scope_path"] != "*":
+            raise RuntimeError("release smoke corpus search returned incompatible scope metadata")
+        if invalid_corpus_area.get("code") != "INVALID_ARGUMENT":
+            raise RuntimeError("release smoke did not reject corpus search combined with an area")
+        if relationship_audit.get("mutated") is not False:
+            raise RuntimeError("release smoke relationship audit was not explicitly read-only")
         if stale.get("code") != "READ_CURSOR_STALE":
             raise RuntimeError(f"release smoke stale cursor returned {stale}")
         if len(pages) < 3 or reconstructed != exact_read_content or read["content"] != reconstructed:
@@ -167,6 +201,8 @@ def main() -> int:
                     "read_pages": len(pages),
                     "read_revision": pages[0]["revision"],
                     "stale_cursor_code": stale["code"],
+                    "corpus_search_results": len(corpus_search["documents"]),
+                    "relationship_issues": relationship_audit["issue_count"],
                     "complete": pages[-1]["complete"],
                 },
                 indent=2,

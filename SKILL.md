@@ -33,7 +33,10 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 
 - Prefer the `fundus` MCP server when available; otherwise use `scripts/fundus.py`.
 - Fundus does not depend on a separate Obsidian MCP. Do not describe missing Fundus tools as "the Obsidian MCP was not configured."
-- Start with `scan`; read only the best active match when confidence is good.
+- Search the inferred scope first with normal `search` / `scan`; read only the best active match when confidence is good.
+- Also use corpus search (`search_scope: corpus` over MCP or `scan --global` over CLI) for Jira tickets, Epics, Domains, capabilities, decisions, and cross-repository work. Scoped search remains the default for repository-local questions.
+- When maintaining an exact known path, inspect its ticket IDs and named parent Epic, Domain, capability, or project references. Perform a corpus lookup for those signals before declaring the knowledge complete or current.
+- Fully read selected notes. Follow at most five directly relevant related notes across at most three scopes; stop when additional matches repeat evidence or do not affect the task.
 - Treat every MCP `read` result as one bounded page. Follow `next_cursor` until `complete` is `true` before summarizing, quoting, comparing, or acting on the note.
 - Concatenate pages only when `path`, `resolved_path`, and `revision` remain identical and offsets are contiguous. Never infer completeness from how much text the tool display happens to show.
 - On `READ_CURSOR_STALE`, discard every collected page and restart without a cursor; never combine revisions. On `READ_CURSOR_INVALID`, restart the read rather than altering the cursor.
@@ -42,6 +45,7 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 - Normal retrieval excludes archived notes. Include archives only when the user asks for archived, stale, historical, or recovery context.
 - Prefer indexed results. Run `index status` or `doctor` when retrieval looks stale; rebuild the index only when appropriate.
 - Use `doctor` for setup/runtime diagnosis; it reports which configuration source selected each value without exposing unrelated environment contents.
+- Use the read-only CLI `relationships audit` when cross-scope navigation appears incomplete. Treat its missing-parent, delivery-link, unresolved-link, weak-alias, and orphan findings as suggestions, not rewrite instructions.
 
 ## Writes
 
@@ -60,6 +64,7 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 - Active `index.md` and `log.md` are reserved files; concept metadata belongs in notes such as `overview.md`.
 - Initialize areas leanly: `overview.md` is the default, `index.md` and `log.md` are opt-in, and typed concept notes normally live at the area root. Add `sources/` only when grouping several raw evidence notes improves navigation.
 - Move notes through the Fundus move operation so stable IDs, logical scope, and scope tags stay consistent. Use a redirect stub only when old paths must remain readable; redirects are not ordinary search evidence.
+- Maintain bidirectional links only when the user's write intent covers each affected note and the links improve navigation. Do not mutate every match returned by corpus search or the relationship audit.
 
 ## Migration And Maintenance
 
@@ -74,7 +79,7 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 ## Codex Permission Behavior
 
 - Prefer the plugin-provided `fundus` MCP tools for normal Fundus reads and writes.
-- Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, `archive candidates`, `area layout plan`, and migration `--dry-run` should not request write escalation.
+- Read-only helper calls such as `scan`, `read`, `relationships audit`, `doctor`, `index status`, `archive candidates`, `area layout plan`, and migration `--dry-run` should not request write escalation.
 - Write-like calls such as `create`, `update`, `index rebuild`, `archive apply`, `archive restore`, `archive cleanup`, `area layout apply`, and migration `--apply` need escalated sandbox permissions when the vault is outside the writable workspace.
 - If MCP tools are unavailable and you must use the CLI helper, run `scripts/fundus.py` from the loaded skill package or from the repository build. Do not assume the legacy direct-skill path `~/.codex/skills/fundus`; plugin installs live under the versioned Codex plugin cache.
 - If you cannot locate the helper path, ask for help or report the blocked write. Never fall back to editing vault Markdown directly.

@@ -123,6 +123,14 @@ The result is compact and includes enough metadata to decide what to read:
 }
 ```
 
+Search defaults to the inferred current project or explicit area. For tickets, Epics, Domains, capabilities, decisions, and cross-repository work, the agent also performs explicit corpus retrieval. Corpus mode searches all active logical scopes, preserves per-result scope metadata, excludes redirects and reserved documents, and includes archives only on request. The agent fully reads at most five directly relevant related notes across at most three scopes before acting.
+
+Exact-path maintenance is not exempt: ticket IDs and named parent-area references found in known notes trigger a corpus lookup before the knowledge is declared complete or current. Search matches are candidates, not a bulk-mutation set.
+
+### Relationship diagnostics
+
+A read-only relationship audit suggests missing named-parent links, area delivery entries without project-note links, unresolved local links, weak ticket aliases, and cross-scope orphans. It never rewrites notes. Bidirectional links are proposed only when they improve navigation and the user's write intent covers every affected note.
+
 ### Save
 
 Representative intent:

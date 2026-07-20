@@ -1517,6 +1517,27 @@ def search_records_for_scope(config: Config, scope: Scope, include_archived: boo
     return records
 
 
+def search_records_for_corpus(config: Config, include_archived: bool) -> list[dict[str, Any]]:
+    index_result = load_index_result(config)
+    cached_by_path = {
+        str(record.get("path")): record
+        for record in (index_result.data or {}).get("documents", [])
+        if isinstance(record, dict)
+    }
+    records: list[dict[str, Any]] = []
+    for path in iter_fundus_markdown_paths(config):
+        relative_path = str(path.relative_to(config.vault_path))
+        record = cached_by_path.get(relative_path)
+        if record is None or not index_record_is_fresh(record, path):
+            record = index_entry_for_document(config, load_document(path, config.vault_path))
+        if record.get("kind") in {"redirect", "reserved"} or record.get("redirect_to"):
+            continue
+        if record.get("archived") and not include_archived:
+            continue
+        records.append(record)
+    return records
+
+
 def score_index_entry(entry: dict[str, Any], query: str | None) -> tuple[int, str]:
     query_terms = tokenize(query or "")
     query_ticket_ids = extract_ticket_ids(query or "")
@@ -1788,18 +1809,28 @@ def scan_documents(
     include_snippet: bool = False,
     include_archived: bool = False,
     scope: Scope | None = None,
+    search_scope: str = "current",
 ) -> list[dict[str, Any]]:
+    if search_scope not in {"current", "corpus"}:
+        raise FundusError("search_scope must be 'current' or 'corpus'.", "INVALID_ARGUMENT")
     active_scope = scope or project_scope(project_name)
-    scope_dir = fundus_scope_dir(config, active_scope)
-    archive_scope_dir = fundus_archive_scope_dir(config, active_scope)
-    if not scope_dir.exists() and not (include_archived and archive_scope_dir.exists()):
-        return []
+    if search_scope == "current":
+        scope_dir = fundus_scope_dir(config, active_scope)
+        archive_scope_dir = fundus_archive_scope_dir(config, active_scope)
+        if not scope_dir.exists() and not (include_archived and archive_scope_dir.exists()):
+            return []
+        records = search_records_for_scope(config, active_scope, include_archived)
+    else:
+        records = search_records_for_corpus(config, include_archived)
 
     matches: list[tuple[int, str, dict[str, Any]]] = []
-    for record in search_records_for_scope(config, active_scope, include_archived):
+    for record in records:
         score, reason = score_index_entry(record, query)
         if score <= 0:
             continue
+        if search_scope == "corpus" and entry_matches_scope(config, record, active_scope):
+            score += 2
+            reason = f"{reason},current-scope" if reason else "current-scope"
         matches.append((score, reason, record))
 
     matches.sort(
@@ -1810,6 +1841,146 @@ def scan_documents(
         )
     )
     return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
+
+
+def _document_local_links(config: Config, document: Document, known_files: set[str]) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+
+    def collect(raw_target: str) -> None:
+        split = _split_local_link_target(raw_target)
+        if split is None:
+            return
+        raw_path, _, _ = split
+        resolution = _resolve_local_link_path(config, document.relative_path, raw_path, known_files)
+        if resolution is None:
+            return
+        resolved = resolution[0]
+        links.append({"target": raw_target, "resolved_target": resolved, "exists": resolved in known_files})
+
+    content = read_note_text(document.path)
+    for pattern in (MARKDOWN_LINK_PATTERN, REFERENCE_LINK_PATTERN):
+        for match in pattern.finditer(content):
+            collect(match.group("target"))
+    for match in WIKILINK_PATTERN.finditer(content):
+        collect(match.group("target"))
+    return links
+
+
+def audit_relationships(config: Config) -> dict[str, Any]:
+    """Return deterministic cross-scope relationship suggestions without mutating the corpus."""
+    documents = [
+        load_document(path, config.vault_path)
+        for path in iter_fundus_markdown_paths(config)
+        if ARCHIVE_DIRNAME not in path.relative_to(fundus_root_dir(config)).parts
+        and path.name not in RESERVED_FILENAMES
+    ]
+    documents = [doc for doc in documents if not is_redirect_frontmatter(doc.frontmatter)]
+    documents.sort(key=lambda doc: doc.relative_path)
+    known_files = {doc.relative_path for doc in documents}
+    classification_by_path = {
+        doc.relative_path: classify_document_scope(config, doc.path, doc.frontmatter) for doc in documents
+    }
+    area_names = {
+        classification.scope.display_name.split("/", 1)[1].casefold(): classification.scope.path
+        for classification in classification_by_path.values()
+        if classification.scope.kind == "area"
+    }
+    project_names = sorted(
+        {
+            classification.scope.path
+            for classification in classification_by_path.values()
+            if classification.scope.kind == "project"
+        }
+    )
+    issues: list[dict[str, Any]] = []
+
+    def add(kind: str, doc: Document, message: str, suggestion: str, **details: Any) -> None:
+        issues.append(
+            {
+                "kind": kind,
+                "path": doc.relative_path,
+                "message": message,
+                "suggestion": suggestion,
+                **details,
+            }
+        )
+
+    for doc in documents:
+        classification = classification_by_path[doc.relative_path]
+        links = _document_local_links(config, doc, known_files)
+        linked_scopes = {
+            classification_by_path[link["resolved_target"]].scope.path
+            for link in links
+            if link["exists"] and link["resolved_target"] in classification_by_path
+        }
+        cross_scope_links = {scope_path for scope_path in linked_scopes if scope_path != classification.scope.path}
+
+        for link in links:
+            if not link["exists"]:
+                add(
+                    "unresolved_link",
+                    doc,
+                    f"Local Fundus link does not resolve: {link['target']}",
+                    "Review or replace the unresolved link; do not rewrite it automatically.",
+                    target=link["target"],
+                    resolved_target=link["resolved_target"],
+                )
+
+        aliases = {alias.upper() for alias in frontmatter_list(doc.frontmatter.get("aliases"))}
+        for ticket_id in extract_ticket_ids(doc.body):
+            if ticket_id not in aliases:
+                add(
+                    "weak_alias",
+                    doc,
+                    f"Ticket {ticket_id} appears in the note but is not an alias.",
+                    f"Consider adding {ticket_id} as an alias through a revision-bound update proposal.",
+                    ticket_id=ticket_id,
+                )
+
+        mentioned_cross_scope = False
+        for match in re.finditer(r"\b(?:parent\s+)?(?:epic|domain)\s*:\s*([^\n.;]+)", doc.body, re.IGNORECASE):
+            name = match.group(1).strip().casefold()
+            target_scope = area_names.get(name)
+            if target_scope and target_scope != classification.scope.path:
+                mentioned_cross_scope = True
+                if target_scope not in linked_scopes:
+                    add(
+                        "parent_mention_without_link",
+                        doc,
+                        f"Named parent area has no Fundus link: {target_scope}",
+                        "Review the parent note and propose a direct link only when write intent covers both notes.",
+                        target_scope=target_scope,
+                    )
+
+        if classification.scope.kind == "area":
+            for project_name in project_names:
+                if re.search(rf"(?<![\w-]){re.escape(project_name)}(?![\w-])", doc.body, re.IGNORECASE):
+                    mentioned_cross_scope = True
+                    if project_name not in linked_scopes:
+                        add(
+                            "area_delivery_without_project_link",
+                            doc,
+                            f"Area delivery names project '{project_name}' without linking a project note.",
+                            "Review the relevant project result and propose a link only if it adds navigational value.",
+                            target_scope=project_name,
+                        )
+
+        if mentioned_cross_scope and not cross_scope_links:
+            add(
+                "cross_scope_orphan",
+                doc,
+                "The note names another logical scope but has no resolved cross-scope Fundus link.",
+                "Use corpus search to identify at most the directly relevant counterpart before proposing a link.",
+            )
+
+    issues.sort(key=lambda issue: (issue["path"], issue["kind"], str(issue.get("target_scope", "")), str(issue.get("target", ""))))
+    return {
+        "scope": "corpus",
+        "documents_checked": len(documents),
+        "issue_count": len(issues),
+        "issues": issues,
+        "mutated": False,
+    }
 
 
 def remove_duplicate_title_heading(body: str, title: str) -> str:
@@ -4603,6 +4774,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum results to return. Default: {MAX_SCAN_RESULTS}.")
     scan_parser.add_argument("--include-snippet", action="store_true", help="Include short indexed snippets in scan results.")
     scan_parser.add_argument("--include-archived", action="store_true", help="Include archived documents in scan results.")
+    scan_parser.add_argument("--global", dest="global_scope", action="store_true", help="Search every active Fundus project and area scope.")
 
     read_parser = subparsers.add_parser("read", help="Read a Fundus document.")
     read_parser.add_argument("--path", required=True, help="Fundus document path relative to the vault root.")
@@ -4796,6 +4968,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor", help="Show resolved project, configuration, vault, and index diagnostics.")
     add_area_argument(doctor_parser)
 
+    relationships_parser = subparsers.add_parser("relationships", help="Inspect cross-scope Fundus relationships without writing.")
+    relationships_subparsers = relationships_parser.add_subparsers(dest="relationships_command", required=True)
+    relationships_subparsers.add_parser("audit", help="Suggest missing, weak, unresolved, and orphaned relationships corpus-wide.")
+
     return parser
 
 
@@ -4821,10 +4997,13 @@ def main() -> int:
         scope = resolve_scope(project_name, area_arg)
 
         if args.command == "scan":
+            if args.global_scope and area_arg:
+                raise FundusError("--global and --area cannot be used together.", "INVALID_ARGUMENT")
+            search_scope = "corpus" if args.global_scope else "current"
             payload = {
                 "project": project_name,
-                "scope": scope.kind,
-                "scope_path": scope.path,
+                "scope": "corpus" if args.global_scope else scope.kind,
+                "scope_path": "*" if args.global_scope else scope.path,
                 "documents": scan_documents(
                     config,
                     project_name,
@@ -4833,6 +5012,7 @@ def main() -> int:
                     args.include_snippet,
                     args.include_archived,
                     scope,
+                    search_scope,
                 ),
             }
             print(json.dumps(payload, indent=2))
@@ -5143,6 +5323,10 @@ def main() -> int:
 
         if args.command == "doctor":
             print(json.dumps(doctor_report_for_scope(config, project_root, project_name, scope), indent=2))
+            return 0
+
+        if args.command == "relationships" and args.relationships_command == "audit":
+            print(json.dumps(audit_relationships(config), indent=2))
             return 0
 
         raise FundusError(f"Unknown command: {args.command}")

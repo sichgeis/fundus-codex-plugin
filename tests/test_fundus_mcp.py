@@ -402,6 +402,10 @@ class McpProtocolTest(McpFundusTestCase):
         self.assertEqual(tools["propose_create"]["inputSchema"]["properties"]["aliases"]["type"], "array")
         self.assertEqual(tools["propose_update"]["inputSchema"]["properties"]["mode"]["enum"], ["append", "replace", "rewrite"])
         self.assertEqual(tools["apply_update"]["inputSchema"]["properties"]["proposal"]["type"], "object")
+        self.assertEqual(
+            tools["search"]["inputSchema"]["properties"]["search_scope"]["enum"],
+            ["current", "corpus"],
+        )
         for tool in tools.values():
             self.assertTrue(tool["title"])
             self.assertLess(len(tool["description"]), 160)
@@ -414,6 +418,44 @@ class McpProtocolTest(McpFundusTestCase):
         admin_names = {tool["name"] for tool in admin_listed["result"]["tools"]}
         self.assertIn("migrate_wiki_to_fundus", admin_names)
         self.assertIn("backup_restore", admin_names)
+
+    def test_search_corpus_mode_keeps_cli_compatible_scope_metadata(self) -> None:
+        fundus_mcp.create_note(
+            "Project Ticket",
+            "BACKEND-2289 project delivery",
+            aliases=["BACKEND-2289"],
+            project="demo",
+            project_root=str(self.project_root),
+        )
+        fundus_mcp.create_note(
+            "Parent Epic",
+            "BACKEND-2289 epic delivery",
+            aliases=["BACKEND-2289"],
+            area="Epics/Parent Epic",
+            project_root=str(self.project_root),
+        )
+
+        result = fundus_mcp.scan_fundus(
+            "BACKEND-2289",
+            search_scope="corpus",
+            project="demo",
+            project_root=str(self.project_root),
+        )
+
+        self.assertEqual(result["scope"], "corpus")
+        self.assertEqual(result["scope_path"], "*")
+        self.assertEqual({item["scope"] for item in result["documents"]}, {"project", "area"})
+
+    def test_search_rejects_area_with_corpus_mode(self) -> None:
+        with self.assertRaises(fundus.FundusError) as raised:
+            fundus_mcp.scan_fundus(
+                "anything",
+                search_scope="corpus",
+                area="Epics/Parent Epic",
+                project_root=str(self.project_root),
+            )
+
+        self.assertEqual(raised.exception.code, "INVALID_ARGUMENT")
 
     def test_read_contract_is_bounded_lossless_and_schema_validated(self) -> None:
         server = fundus_mcp.build_server()

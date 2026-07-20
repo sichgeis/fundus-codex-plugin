@@ -8,13 +8,14 @@ User: "Search Fundus for BACKEND-2291."
 
 Agent behavior:
 
-- Scan active Fundus notes for `BACKEND-2291`.
+- Scan the inferred scope for `BACKEND-2291`, then perform a corpus search because a Jira ticket may connect project, Epic, Domain, and cross-repository notes.
 - Read the strongest match if the scan result is directly relevant.
 - Follow every `next_cursor`, retaining only one stable path, target, and revision, until `complete: true`.
 - If continuation returns `READ_CURSOR_STALE`, discard partial content and restart before summarizing.
 - Return a compact answer.
 - Mention the note title/path briefly.
 - If nothing relevant exists, say that no relevant Fundus note was found.
+- Fully read no more than five directly relevant notes across no more than three scopes.
 
 Example response shape:
 
@@ -62,6 +63,8 @@ Agent behavior:
 - Use `propose_update`, then `apply_update` when the proposal remains current.
 - Also update Jira or other requested systems when the user asks for them.
 - Summarize what changed afterward.
+- If known paths reveal ticket IDs or named parent areas, search the corpus and read the relevant parent before declaring the knowledge current.
+- Do not mutate every corpus match. Add bidirectional links only when write intent covers both notes and each link improves navigation.
 
 Example response shape:
 
@@ -118,3 +121,16 @@ Agent behavior:
 - Apply only the exact proposal file when the user authorized the bulk change.
 - Report the verified backup ID, move/link counts, corpus result, and rollback point.
 - Do not imitate the proposal with shell moves or direct Markdown edits.
+
+## Exact-Path Cross-Scope Maintenance
+
+User: "Update these known project notes for BACKEND-2289 and make the knowledge current."
+
+Agent behavior:
+
+- Read the named notes completely and extract ticket IDs and parent-area references.
+- Search the inferred project scope first, then use corpus search for `BACKEND-2289` and the parent-area name.
+- Read only directly relevant results, capped at five notes and three scopes.
+- Reconcile the project notes with the parent Epic or Domain before applying revision-bound proposals.
+- Maintain useful links in both directions only when the user's update intent covers every affected note.
+- Do not update weak matches merely because corpus search or `relationships audit` returned them.

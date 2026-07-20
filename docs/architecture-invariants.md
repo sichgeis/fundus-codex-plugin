@@ -221,3 +221,11 @@ Layout apply MUST accept only the exact fresh proposal, serialize globally, reje
 ### FND-038 — Layout moves preserve navigation and identity
 
 A layout migration MUST preserve stable IDs and exact bytes for pure moves. When a moved path changes Markdown navigation, Fundus MUST rebase links inside moved documents and rewrite active backlinks while preserving labels, anchors, and titles. It MUST NOT introduce a broken local link that resolved before the migration.
+
+### FND-039 — Corpus retrieval is explicit and scope-preserving
+
+Current project or area retrieval MUST remain the default. Corpus retrieval MUST be explicit, use the shared scorer and application layer, inspect every active logical scope, and retain each result's `scope` and `scope_path`. Redirects and reserved files MUST remain excluded; archives MUST remain opt-in. A current-scope preference MAY break close corpus ties but MUST NOT suppress stronger evidence from another scope.
+
+### FND-040 — Relationship diagnostics never curate automatically
+
+Relationship auditing MUST be read-only, deterministic, and suggestion-only. It MAY report missing parent or delivery links, unresolved links, weak aliases, and cross-scope orphans. It MUST NOT rewrite notes, add aliases, or create bidirectional links automatically.

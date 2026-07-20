@@ -31,13 +31,34 @@ class SkillContractTest(unittest.TestCase):
         fixture = json.loads((ROOT / "tests" / "fixtures" / "agent_evaluations.json").read_text())
         cases = {case["name"]: case for case in fixture["cases"]}
 
-        self.assertEqual(fixture["version"], 1)
+        self.assertEqual(fixture["version"], 2)
         self.assertIn("duplicate-create-needs-review", cases)
         self.assertIn("stale-evidence-without-write-intent", cases)
         self.assertIn("long-read-requires-completion", cases)
         self.assertIn("apply_create_without_reviewed_override", cases["duplicate-create-needs-review"]["must_not"])
         self.assertEqual(cases["broad-update-intent"]["expected_operations"], ["propose_update", "apply_update"])
         self.assertEqual(cases["long-read-requires-completion"]["expected_completion"], True)
+
+    def test_skill_requires_bounded_cross_scope_retrieval_before_maintenance(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text()
+
+        self.assertIn("Search the inferred scope first", skill)
+        self.assertIn("corpus search", skill)
+        self.assertIn("at most five", skill)
+        self.assertIn("at most three scopes", skill)
+        self.assertIn("bidirectional links", skill)
+        self.assertIn("Do not mutate every match", skill)
+        self.assertIn("relationship audit", skill)
+
+    def test_agent_evaluation_fixture_covers_exact_path_parent_discovery(self) -> None:
+        fixture = json.loads((ROOT / "tests" / "fixtures" / "agent_evaluations.json").read_text())
+        cases = {case["name"]: case for case in fixture["cases"]}
+
+        case = cases["known-project-note-maintenance-discovers-parent-area"]
+        self.assertIn("search_current_scope", case["expected_operations"])
+        self.assertIn("search_corpus", case["expected_operations"])
+        self.assertIn("read_parent_area", case["expected_operations"])
+        self.assertIn("declare_current_before_parent_discovery", case["must_not"])
 
 
 if __name__ == "__main__":

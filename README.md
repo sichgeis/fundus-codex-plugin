@@ -6,7 +6,7 @@ The plugin packages the `fundus` skill, a self-contained local MCP server, and a
 
 Existing Fundus documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
-Search is accelerated by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json`. Every search checks relevant file fingerprints, repairs changed or added records in memory, drops deleted paths, and uses the same scorer with or without an index. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
+Search is accelerated by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json`. Scoped search remains the backward-compatible default; explicit corpus search spans every project and area while retaining each result's logical scope. Every search checks relevant file fingerprints, repairs changed or added records in memory, drops deleted paths, and uses the same scorer with or without an index. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
 
 Reads and search results include a SHA-256 revision. Agent-facing MCP reads return at most 2,000 decoded characters with explicit offsets, total length, completion state, and an opaque continuation cursor. Following every cursor at one stable revision reconstructs the complete note; a direct edit or redirect change returns `READ_CURSOR_STALE` and requires a restart. Pass the final stable revision as `--expected-revision` for overwrite-like operations so a human edit made after the read produces `REVISION_CONFLICT` without being overwritten. Fundus serializes note-plus-index writes across processes and journals multi-file moves for rollback or next-run recovery.
 
@@ -178,6 +178,22 @@ Use `--area` for cross-repository knowledge such as epics, domains, capabilities
 python dist/fundus/scripts/fundus.py scan --area "Epics/AI Agent Templates" --query "lineage"
 python dist/fundus/scripts/fundus.py create --area "Epics/AI Agent Templates" --title "Story Map" --type Epic --content-file /tmp/story-map.md
 ```
+
+Search every active project and area explicitly when a ticket or capability may span scopes:
+
+```bash
+python dist/fundus/scripts/fundus.py scan --global --query "BACKEND-2289" --limit 5
+```
+
+MCP callers use `search_scope: corpus`; `current` remains the default. Corpus results retain their own `scope` and `scope_path`, archives remain opt-in, and redirects and reserved documents remain excluded. `scan --global` cannot be combined with `--area`.
+
+Inspect cross-scope navigation without writing:
+
+```bash
+python dist/fundus/scripts/fundus.py relationships audit
+```
+
+The audit suggests missing parent/delivery links, unresolved links, weak aliases, and cross-scope orphans. It does not mutate notes; review and apply only targeted revision-bound proposals covered by the user's write intent.
 
 `--project` and `--area` are mutually exclusive. An area is exactly an allowlisted root plus one logical name, such as `Epics/AI Agent Templates`. Deeper folders are physical organization within that logical scope and do not become part of `scope_path`.
 
@@ -461,7 +477,7 @@ Fundus is licensed under the MIT License. The vendored `ruamel.yaml` 0.19.1 depe
 
 GitHub Actions runs the full suite on Python 3.11, 3.12, and 3.13 on Linux plus a Python 3.13 macOS compatibility job. A separate package job runs `task verify`, the exact packaged MCP integration, the artifact privacy scan, and the 2,000-note performance gate, then uploads the JSON performance report.
 
-The plugin manifest is the version source. Build and verification propagate and compare that version across the built manifest, runtime MCP `serverInfo`, local marketplace metadata, marketplace plugin copy, and the matching section in `RELEASE_NOTES.md`. The current release is 0.2.3.
+The plugin manifest is the version source. Build and verification propagate and compare that version across the built manifest, runtime MCP `serverInfo`, local marketplace metadata, marketplace plugin copy, and the matching section in `RELEASE_NOTES.md`. The current release is 0.2.4.
 
 ## Update Workflow
 

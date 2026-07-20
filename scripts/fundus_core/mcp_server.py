@@ -45,15 +45,21 @@ def scan_fundus(
     limit: int = fundus_core.MAX_SCAN_RESULTS,
     include_snippet: bool = False,
     include_archived: bool = False,
+    search_scope: Literal["current", "corpus"] = "current",
     project: str | None = None,
     project_root: str | None = None,
     area: str | None = None,
 ) -> dict[str, Any]:
+    if search_scope == "corpus" and area:
+        raise fundus_core.FundusError(
+            "area cannot be combined with corpus search; use current search for one area.",
+            "INVALID_ARGUMENT",
+        )
     context = resolve_context(project, project_root, area)
     return {
         "project": context.project_name,
-        "scope": context.scope.kind,
-        "scope_path": context.scope.path,
+        "scope": "corpus" if search_scope == "corpus" else context.scope.kind,
+        "scope_path": "*" if search_scope == "corpus" else context.scope.path,
         "documents": fundus_core.scan_documents(
             context.config,
             context.project_name,
@@ -62,6 +68,7 @@ def scan_fundus(
             include_snippet,
             include_archived,
             context.scope,
+            search_scope,
         ),
     }
 
@@ -509,6 +516,7 @@ PARAMETER_DESCRIPTIONS = {
     "limit": "Maximum number of results to return.",
     "include_snippet": "Include a short matching body excerpt in results.",
     "include_archived": "Include archived notes in retrieval.",
+    "search_scope": "Search only the current logical scope or the complete active corpus.",
     "project": "Project scope override; cannot be combined with area.",
     "project_root": "Repository or working directory used to resolve Fundus config.",
     "area": "Explicit cross-repository Fundus area path.",
@@ -755,7 +763,7 @@ def make_operation(
 def build_operation_registry(include_admin: bool = False) -> list[OperationSpec]:
     registry: list[OperationSpec] = []
     workbench_definitions = [
-        ("search", "Search Fundus", "Find current Fundus evidence in a project or area.", scan_fundus, True, False, True),
+        ("search", "Search Fundus", "Find current-scope or corpus-wide Fundus evidence.", scan_fundus, True, False, True),
         (
             "read",
             "Read Fundus Note",

@@ -1,5 +1,18 @@
 # Fundus release notes
 
+## 0.2.4 — 2026-07-20
+
+Fundus 0.2.4 adds explicit cross-scope retrieval while preserving current-scope search as the default.
+
+- Extends the shared MCP/CLI search operation with `search_scope: corpus` and `scan --global`, returning deterministic results across active project and area scopes with per-result `scope` and `scope_path` metadata.
+- Keeps scoped search backward compatible and gives the inferred current scope only a small corpus-ranking preference, so stronger Epic, Domain, ticket, title, and alias evidence remains discoverable.
+- Preserves read-only in-memory index repair and excludes redirects, reserved documents, and archives unless archive retrieval is explicitly requested.
+- Adds a read-only `relationships audit` CLI diagnostic for missing parent-area links, area delivery entries without project-note links, unresolved links, weak ticket aliases, and cross-scope orphans. It emits suggestions and never rewrites notes.
+- Requires bounded cross-scope agent retrieval: current scope first, then corpus lookup for tickets and parent references, with no more than five related notes across three scopes and no automatic mutation of every match.
+- Adds motivating BACKEND-2032/BACKEND-2289 topology coverage, indexed/indexless parity, stale repair, CLI/MCP contract tests, exact-path agent evaluation, disposable-vault release smoke coverage, and a mixed-scope 2,000-note corpus benchmark.
+
+After reinstalling with `task install`, start a fresh Codex task so the 0.2.4 skill and MCP search schema are loaded.
+
 ## 0.2.3 — 2026-07-10
 
 Fundus 0.2.3 is the lean-area and link-safe curation patch for the 0.2 release line.

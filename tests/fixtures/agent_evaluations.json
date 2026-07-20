@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "name": "explicit-save-without-duplicates",
@@ -37,6 +37,13 @@
       "expected_operations": ["read"],
       "expected_completion": true,
       "must_not": ["summarize_before_complete", "stop_with_next_cursor", "combine_revisions"]
+    },
+    {
+      "name": "known-project-note-maintenance-discovers-parent-area",
+      "intent": "Update two known project note paths for BACKEND-2289 and declare the knowledge current",
+      "expected_operations": ["search_current_scope", "search_corpus", "read_project_notes", "read_parent_area"],
+      "expected_bounds": {"related_notes": 5, "scopes": 3},
+      "must_not": ["declare_current_before_parent_discovery", "mutate_every_search_match", "write_without_intent"]
     }
   ]
 }

@@ -119,13 +119,16 @@ Current behavior:
 - index rebuild scans active and archived Markdown,
 - create and update refresh an existing index entry,
 - archive and restore refresh source and destination entries,
-- every scan enumerates the relevant physical scope and validates cached fingerprints,
+- current-scope scan enumerates only the relevant physical scope and remains the default,
+- explicit corpus scan enumerates all active project and area scopes while retaining per-result `scope` and `scope_path`,
 - changed and added files are converted to current records in memory and deleted files disappear immediately,
 - indexed and uncached records use the same record builder, scorer, filters, and deterministic ordering,
 - read-only search never persists repairs; `index rebuild` is the explicit persistence boundary,
 - corrupt, incompatible, and missing indexes fall back to current Markdown without being overwritten,
 - index status reports `current`, `missing`, `incompatible`, or `corrupt` plus stale paths,
 - redirects and reserved files are never ordinary evidence, while archives remain opt-in.
+
+MCP exposes corpus retrieval as `search_scope: corpus`; CLI exposes the same shared operation as `scan --global`. Corpus ranking uses the existing scorer plus a two-point inferred-current-scope preference, which breaks close ties without suppressing stronger evidence in an Epic, Domain, or peer project. A read-only CLI `relationships audit` diagnoses named parent areas without links, area delivery references without project-note links, unresolved local links, ticket IDs absent from aliases, and cross-scope orphans. The audit is suggestion-only and performs no persistence.
 
 This in-memory repair policy keeps scan and its MCP wrapper read-only. The final 0.2.0 benchmark on the primary arm64 macOS/Python 3.14.6 machine measured 2,000-note warm search at 49.180 ms p50 and 50.927 ms p95, below the 100 ms release target. Full rebuild was 1,733.529 ms, one-file in-memory refresh was 47.622 ms, and the index was 4,092,517 bytes. Re-run with `task benchmark:search`.
 

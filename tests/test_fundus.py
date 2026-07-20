@@ -549,6 +549,193 @@ class IndexSearchTest(FundusTestCase):
         self.assertEqual([result["title"] for result in direct], ["Alpha Candidate", "Zulu Candidate"])
         self.assertEqual(indexed, direct)
 
+    def create_cross_scope_topology(self) -> None:
+        fundus.create_document(
+            self.config,
+            "prompting-service",
+            "Prebuilt Workflow Template API Contract",
+            "BACKEND-2289 defines the backend contract. Parent Epic: AI Agent Templates.",
+            ["ticket"],
+            aliases=["BACKEND-2289"],
+        )
+        fundus.create_document(
+            self.config,
+            "prompting-service",
+            "Workflow Templates First Version",
+            "Historical delivery for BACKEND-2032.",
+            ["ticket"],
+        )
+        fundus.create_document(
+            self.config,
+            "AI Agent Templates",
+            "AI Agent Templates",
+            "Parent epic for BACKEND-2032 and BACKEND-2289 across prompting-service and enrichment-hub.",
+            ["epic"],
+            scope=fundus.area_scope("Epics/AI Agent Templates"),
+            aliases=["BACKEND-2032", "BACKEND-2289"],
+        )
+        fundus.create_document(
+            self.config,
+            "enrichment-hub",
+            "Prebuilt Template Static Metadata Cleanup",
+            "Enrichment Hub follow-up for BACKEND-2289.",
+            ["ticket"],
+            aliases=["BACKEND-2289"],
+        )
+
+    def test_corpus_search_discovers_project_and_area_results_without_changing_scoped_search(self) -> None:
+        self.create_cross_scope_topology()
+
+        scoped = fundus.scan_documents(self.config, "prompting-service", "BACKEND-2289")
+        corpus = fundus.scan_documents(
+            self.config,
+            "prompting-service",
+            "BACKEND-2289",
+            limit=5,
+            search_scope="corpus",
+        )
+
+        self.assertEqual(scoped[0]["path"], "Fundus/prompting-service/prebuilt-workflow-template-api-contract.md")
+        self.assertTrue(all(result["scope_path"] == "prompting-service" for result in scoped))
+        self.assertTrue(
+            {
+                "Fundus/prompting-service/prebuilt-workflow-template-api-contract.md",
+                "Fundus/Epics/AI Agent Templates/ai-agent-templates.md",
+                "Fundus/enrichment-hub/prebuilt-template-static-metadata-cleanup.md",
+            }.issubset({result["path"] for result in corpus}),
+        )
+        self.assertTrue(all(result["scope"] in {"project", "area"} for result in corpus))
+        self.assertTrue(all(result["scope_path"] for result in corpus))
+
+    def test_corpus_search_finds_parent_epic_near_top_for_backend_2032(self) -> None:
+        self.create_cross_scope_topology()
+
+        results = fundus.scan_documents(
+            self.config,
+            "prompting-service",
+            "BACKEND-2032",
+            limit=5,
+            search_scope="corpus",
+        )
+
+        paths = [result["path"] for result in results]
+        self.assertIn("Fundus/Epics/AI Agent Templates/ai-agent-templates.md", paths[:3])
+        self.assertEqual(results, fundus.scan_documents(
+            self.config,
+            "prompting-service",
+            "BACKEND-2032",
+            limit=5,
+            search_scope="corpus",
+        ))
+
+    def test_corpus_search_excludes_archive_redirect_and_reserved_documents(self) -> None:
+        self.create_cross_scope_topology()
+        archived = fundus.create_document(
+            self.config, "other", "Archived BACKEND-2289", "BACKEND-2289", ["ticket"]
+        )
+        fundus.archive_document(self.config, archived["path"], "historical")
+        redirect = fundus.create_document(
+            self.config, "other", "Redirect BACKEND-2289", "BACKEND-2289", ["ticket"]
+        )
+        fundus.move_document(
+            self.config,
+            redirect["path"],
+            "Fundus/Domains/Templates/redirect-backend-2289.md",
+            leave_stub=True,
+        )
+        reserved = self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / "index.md"
+        reserved.write_text("# BACKEND-2289 reserved navigation\n")
+
+        active = fundus.scan_documents(
+            self.config, "prompting-service", "BACKEND-2289", search_scope="corpus"
+        )
+        historical = fundus.scan_documents(
+            self.config,
+            "prompting-service",
+            "BACKEND-2289",
+            search_scope="corpus",
+            include_archived=True,
+        )
+
+        active_paths = {result["path"] for result in active}
+        self.assertNotIn(archived["path"], active_paths)
+        self.assertNotIn(redirect["path"], active_paths)
+        self.assertNotIn(str(reserved.relative_to(self.vault_path)), active_paths)
+        self.assertTrue(any(result.get("archived") for result in historical))
+
+    def test_corpus_search_repairs_stale_index_and_matches_indexless_order(self) -> None:
+        self.create_cross_scope_topology()
+        without_index = fundus.scan_documents(
+            self.config, "prompting-service", "BACKEND-2289", search_scope="corpus"
+        )
+        fundus.rebuild_index(self.config)
+        epic = self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / "ai-agent-templates.md"
+        epic.write_text(epic.read_text().replace("BACKEND-2289", "BACKEND-2289 fresh-cross-scope"))
+
+        with_stale_index = fundus.scan_documents(
+            self.config, "prompting-service", "BACKEND-2289", search_scope="corpus"
+        )
+
+        self.assertEqual([item["path"] for item in with_stale_index], [item["path"] for item in without_index])
+        self.assertTrue(any("fresh-cross-scope" in item.get("snippet", "") for item in fundus.scan_documents(
+            self.config,
+            "prompting-service",
+            "fresh-cross-scope",
+            search_scope="corpus",
+            include_snippet=True,
+        )))
+
+    def test_scan_rejects_unknown_search_scope(self) -> None:
+        with self.assertRaises(fundus.FundusError) as raised:
+            fundus.scan_documents(self.config, "demo", "anything", search_scope="everywhere")
+
+        self.assertEqual(raised.exception.code, "INVALID_ARGUMENT")
+
+
+class RelationshipAuditTest(FundusTestCase):
+    def test_relationship_audit_returns_deterministic_suggestions_without_writing(self) -> None:
+        epic = fundus.create_document(
+            self.config,
+            "AI Agent Templates",
+            "AI Agent Templates",
+            "Delivery spans prompting-service.",
+            ["epic"],
+            scope=fundus.area_scope("Epics/AI Agent Templates"),
+            aliases=["BACKEND-2289"],
+        )
+        project = fundus.create_document(
+            self.config,
+            "prompting-service",
+            "Backend Contract",
+            "Parent Epic: AI Agent Templates. Tracks BACKEND-2289. [Missing](../missing.md)",
+            ["ticket"],
+        )
+        before = {
+            path: (self.vault_path / path).read_bytes()
+            for path in (epic["path"], project["path"])
+        }
+
+        first = fundus.audit_relationships(self.config)
+        second = fundus.audit_relationships(self.config)
+
+        self.assertEqual(first, second)
+        issue_kinds = {issue["kind"] for issue in first["issues"]}
+        self.assertTrue(
+            {
+                "parent_mention_without_link",
+                "area_delivery_without_project_link",
+                "unresolved_link",
+                "weak_alias",
+                "cross_scope_orphan",
+            }.issubset(issue_kinds)
+        )
+        self.assertTrue(all(issue["suggestion"] for issue in first["issues"]))
+        self.assertFalse(first["mutated"])
+        self.assertEqual(
+            before,
+            {path: (self.vault_path / path).read_bytes() for path in before},
+        )
+
 
 class ArchiveDocumentTest(FundusTestCase):
     def create_article(self, title: str, body: str, tags: list[str] | None = None) -> Path:

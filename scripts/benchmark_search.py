@@ -21,14 +21,20 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def generate_corpus(config: fundus.Config, note_count: int) -> None:
-    scope = fundus.project_scope("benchmark")
-    root = fundus.fundus_scope_dir(config, scope)
-    root.mkdir(parents=True, exist_ok=True)
     for index in range(note_count):
+        scope = (
+            fundus.project_scope("benchmark")
+            if index % 4 in {0, 1}
+            else fundus.project_scope("benchmark-peer")
+            if index % 4 == 2
+            else fundus.area_scope("Epics/Benchmark Retrieval")
+        )
+        root = fundus.fundus_scope_dir(config, scope)
+        root.mkdir(parents=True, exist_ok=True)
         title = f"Benchmark Note {index:04d}"
         frontmatter = fundus.frontmatter_for_new_document(
             config,
-            "benchmark",
+            scope.path if scope.kind == "project" else "benchmark",
             scope,
             title,
             ["benchmark", f"shard-{index % 50}"],
@@ -64,7 +70,7 @@ def run_benchmark(note_count: int, iterations: int) -> dict[str, object]:
         for iteration in range(iterations):
             query = f"shard {iteration % 50} shared retrieval"
             started = time.perf_counter()
-            results = fundus.scan_documents(config, "benchmark", query, limit=10)
+            results = fundus.scan_documents(config, "benchmark", query, limit=10, search_scope="corpus")
             durations_ms.append((time.perf_counter() - started) * 1000)
             if not results:
                 raise RuntimeError(f"Benchmark query returned no results: {query}")
@@ -72,7 +78,9 @@ def run_benchmark(note_count: int, iterations: int) -> dict[str, object]:
         changed_path = vault / "Fundus" / "benchmark" / "benchmark-note-0000.md"
         changed_path.write_text(changed_path.read_text().replace("shared retrieval detail", "freshincrementaltoken"))
         incremental_started = time.perf_counter()
-        incremental_results = fundus.scan_documents(config, "benchmark", "freshincrementaltoken", limit=3)
+        incremental_results = fundus.scan_documents(
+            config, "benchmark", "freshincrementaltoken", limit=3, search_scope="corpus"
+        )
         incremental_ms = (time.perf_counter() - incremental_started) * 1000
         if not incremental_results or incremental_results[0]["path"] != "Fundus/benchmark/benchmark-note-0000.md":
             raise RuntimeError("Incremental refresh did not expose the externally edited note.")
@@ -90,6 +98,8 @@ def run_benchmark(note_count: int, iterations: int) -> dict[str, object]:
             "index_bytes": index_file.stat().st_size,
             "max_rss_raw": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             "search_repair_policy": "read-only in-memory; explicit rebuild persists",
+            "search_scope": "corpus",
+            "logical_scopes": 3,
             "python": platform.python_version(),
             "platform": platform.platform(),
         }

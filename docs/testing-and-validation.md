@@ -228,6 +228,14 @@ Fixture cases:
 - redirect,
 - ambiguous candidates,
 - stop-word-heavy phrase.
+- mixed project/Epic/Domain topology,
+- exact-path maintenance that must discover a parent area,
+- corpus exclusion of redirects and reserved documents,
+- deterministic current-scope tie preference without suppressing stronger cross-scope evidence.
+
+Run mixed-scope queries in both current and corpus modes. For motivating topology fixtures, `BACKEND-2032` must discover the AI Agent Templates Epic near the top, and `BACKEND-2289` must return the backend contract, parent Epic, and Enrichment Hub follow-up within a bounded result set. Indexed, indexless, corrupt-index, and stale-index results must remain materially equivalent.
+
+Relationship-audit fixtures must cover named parents without links, area delivery entries without project-note links, unresolved links, ticket IDs missing from aliases, and cross-scope orphans. Snapshot note bytes before and after to prove the audit writes nothing.
 
 ### Freshness
 
@@ -267,7 +275,7 @@ Command:
 task benchmark:search
 ```
 
-Environment and method:
+Environment and method for the original scoped baseline:
 
 - macOS 26.5.2 arm64, Python 3.14.6;
 - 2,000 deterministic project notes in a temporary vault;
@@ -289,6 +297,23 @@ max RSS (macOS raw bytes):     53968896
 ```
 
 The measured p95 passes the initial `<= 100 ms` release gate. The benchmark uses only temporary data and asserts the threshold when run through the Taskfile target.
+
+### P13 measured corpus baseline — 2026-07-20
+
+The 0.2.4 benchmark generated 2,000 deterministic notes across two projects and one Epic, then applied the same p95 gate to explicit corpus search:
+
+```text
+generation:                    2571.470 ms
+full rebuild:                  1674.309 ms
+corpus warm search p50:          69.207 ms
+corpus warm search p95:          71.455 ms
+corpus warm search max:          72.557 ms
+one-file in-memory refresh:      65.896 ms
+index size:                    4166017 bytes
+max RSS (macOS raw bytes):     65208320
+```
+
+The mixed-scope corpus p95 passes the `<= 100 ms` release gate.
 
 ## P14 concurrency and recovery tests
 

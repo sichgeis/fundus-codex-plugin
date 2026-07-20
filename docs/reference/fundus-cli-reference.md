@@ -27,6 +27,7 @@ python /path/to/fundus/scripts/fundus.py \
 python /path/to/fundus/scripts/fundus.py scan --query "authentication flow"
 python /path/to/fundus/scripts/fundus.py scan --query "BACKEND-2242 retry budget" --limit 5 --include-snippet
 python /path/to/fundus/scripts/fundus.py scan --area "Epics/AI Agent Templates" --query "story map"
+python /path/to/fundus/scripts/fundus.py scan --global --query "BACKEND-2289" --limit 5
 python /path/to/fundus/scripts/fundus.py scan --include-archived --query "old decision"
 python /path/to/fundus/scripts/fundus.py read --path "Fundus/my-project/authentication-flow.md"
 python /path/to/fundus/scripts/fundus.py read --path "Fundus/my-project/large-note.md" --paged
@@ -34,6 +35,16 @@ python /path/to/fundus/scripts/fundus.py read --path "Fundus/my-project/large-no
 ```
 
 The first `read` form preserves the full-result CLI behavior for human and scripting compatibility. Agent fallback must use `--paged`, continue through every `next_cursor`, and stop only when `complete` is `true`. `READ_CURSOR_INVALID` requires a fresh start. `READ_CURSOR_STALE` means the note or redirect target changed; discard all collected pages and restart so revisions are never mixed.
+
+Normal scan searches the current project or explicit area. `scan --global` searches every logical scope and retains each result's `scope` and `scope_path`; it cannot be combined with `--area`. Archives remain opt-in, and redirects and reserved documents remain excluded.
+
+Inspect relationship quality without writing:
+
+```bash
+python /path/to/fundus/scripts/fundus.py relationships audit
+```
+
+The audit reports suggestions for named parent Epics/Domains without links, area delivery references without project-note links, unresolved local links, ticket IDs missing from aliases, and cross-scope orphans. Review findings before proposing targeted updates; never rewrite the corpus from the audit automatically.
 
 ## Create And Update
 
