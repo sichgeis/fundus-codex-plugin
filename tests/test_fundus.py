@@ -736,6 +736,68 @@ class RelationshipAuditTest(FundusTestCase):
             {path: (self.vault_path / path).read_bytes() for path in before},
         )
 
+    def test_relationship_audit_treats_existing_reserved_and_redirect_links_as_resolved(self) -> None:
+        reserved = self.vault_path / "Fundus" / "Epics" / "Navigation" / "index.md"
+        reserved.parent.mkdir(parents=True)
+        reserved.write_text("# Navigation\n")
+        target = fundus.create_document(self.config, "demo", "Canonical Note", "Body", ["ticket"])
+        moved = fundus.move_document(
+            self.config,
+            target["path"],
+            "Fundus/Epics/Navigation/canonical-note.md",
+            leave_stub=True,
+        )
+        source = fundus.create_document(
+            self.config,
+            "demo",
+            "Linked Note",
+            "[Navigation](../Epics/Navigation/index.md) and [Redirect](canonical-note.md).",
+            ["ticket"],
+        )
+
+        audit = fundus.audit_relationships(self.config)
+        unresolved = [
+            issue for issue in audit["issues"]
+            if issue["path"] == source["path"] and issue["kind"] == "unresolved_link"
+        ]
+
+        self.assertEqual(moved["path"], "Fundus/Epics/Navigation/canonical-note.md")
+        self.assertEqual(unresolved, [])
+
+    def test_relationship_audit_disambiguates_epic_and_domain_parent_names(self) -> None:
+        fundus.create_document(
+            self.config,
+            "Shared",
+            "Shared Epic",
+            "Epic context.",
+            ["epic"],
+            scope=fundus.area_scope("Epics/Shared"),
+        )
+        fundus.create_document(
+            self.config,
+            "Shared",
+            "Shared Domain",
+            "Domain context.",
+            ["domain"],
+            scope=fundus.area_scope("Domains/Shared"),
+        )
+        epic_child = fundus.create_document(
+            self.config, "demo", "Epic Child", "Parent Epic: Shared.", ["ticket"]
+        )
+        domain_child = fundus.create_document(
+            self.config, "demo", "Domain Child", "Parent Domain: Shared.", ["ticket"]
+        )
+
+        audit = fundus.audit_relationships(self.config)
+        parents = {
+            issue["path"]: issue["target_scope"]
+            for issue in audit["issues"]
+            if issue["kind"] == "parent_mention_without_link"
+        }
+
+        self.assertEqual(parents[epic_child["path"]], "Epics/Shared")
+        self.assertEqual(parents[domain_child["path"]], "Domains/Shared")
+
 
 class ArchiveDocumentTest(FundusTestCase):
     def create_article(self, title: str, body: str, tags: list[str] | None = None) -> Path:

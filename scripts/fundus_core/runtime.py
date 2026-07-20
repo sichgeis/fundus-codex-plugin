@@ -1494,7 +1494,12 @@ def index_record_is_fresh(record: dict[str, Any], path: Path) -> bool:
     )
 
 
-def search_records_for_scope(config: Config, scope: Scope, include_archived: bool) -> list[dict[str, Any]]:
+def searchable_records_for_paths(
+    config: Config,
+    paths: list[Path],
+    include_archived: bool,
+    scope: Scope | None = None,
+) -> list[dict[str, Any]]:
     index_result = load_index_result(config)
     cached_by_path = {
         str(record.get("path")): record
@@ -1502,12 +1507,12 @@ def search_records_for_scope(config: Config, scope: Scope, include_archived: boo
         if isinstance(record, dict)
     }
     records: list[dict[str, Any]] = []
-    for path in markdown_paths_for_scope(config, scope, include_archived):
+    for path in paths:
         relative_path = str(path.relative_to(config.vault_path))
         record = cached_by_path.get(relative_path)
         if record is None or not index_record_is_fresh(record, path):
             record = index_entry_for_document(config, load_document(path, config.vault_path))
-        if not entry_matches_scope(config, record, scope):
+        if scope is not None and not entry_matches_scope(config, record, scope):
             continue
         if record.get("kind") in {"redirect", "reserved"} or record.get("redirect_to"):
             continue
@@ -1515,27 +1520,19 @@ def search_records_for_scope(config: Config, scope: Scope, include_archived: boo
             continue
         records.append(record)
     return records
+
+
+def search_records_for_scope(config: Config, scope: Scope, include_archived: bool) -> list[dict[str, Any]]:
+    return searchable_records_for_paths(
+        config,
+        markdown_paths_for_scope(config, scope, include_archived),
+        include_archived,
+        scope,
+    )
 
 
 def search_records_for_corpus(config: Config, include_archived: bool) -> list[dict[str, Any]]:
-    index_result = load_index_result(config)
-    cached_by_path = {
-        str(record.get("path")): record
-        for record in (index_result.data or {}).get("documents", [])
-        if isinstance(record, dict)
-    }
-    records: list[dict[str, Any]] = []
-    for path in iter_fundus_markdown_paths(config):
-        relative_path = str(path.relative_to(config.vault_path))
-        record = cached_by_path.get(relative_path)
-        if record is None or not index_record_is_fresh(record, path):
-            record = index_entry_for_document(config, load_document(path, config.vault_path))
-        if record.get("kind") in {"redirect", "reserved"} or record.get("redirect_to"):
-            continue
-        if record.get("archived") and not include_archived:
-            continue
-        records.append(record)
-    return records
+    return searchable_records_for_paths(config, iter_fundus_markdown_paths(config), include_archived)
 
 
 def score_index_entry(entry: dict[str, Any], query: str | None) -> tuple[int, str]:
@@ -1866,22 +1863,130 @@ def _document_local_links(config: Config, document: Document, known_files: set[s
     return links
 
 
-def audit_relationships(config: Config) -> dict[str, Any]:
-    """Return deterministic cross-scope relationship suggestions without mutating the corpus."""
-    documents = [
-        load_document(path, config.vault_path)
+def _relationship_audit_documents(config: Config) -> tuple[list[Document], set[str]]:
+    active_paths = [
+        path
         for path in iter_fundus_markdown_paths(config)
         if ARCHIVE_DIRNAME not in path.relative_to(fundus_root_dir(config)).parts
-        and path.name not in RESERVED_FILENAMES
     ]
-    documents = [doc for doc in documents if not is_redirect_frontmatter(doc.frontmatter)]
-    documents.sort(key=lambda doc: doc.relative_path)
-    known_files = {doc.relative_path for doc in documents}
-    classification_by_path = {
-        doc.relative_path: classify_document_scope(config, doc.path, doc.frontmatter) for doc in documents
+    known_files = {str(path.relative_to(config.vault_path)) for path in active_paths}
+    documents = [
+        load_document(path, config.vault_path)
+        for path in active_paths
+        if path.name not in RESERVED_FILENAMES
+    ]
+    documents = [document for document in documents if not is_redirect_frontmatter(document.frontmatter)]
+    documents.sort(key=lambda document: document.relative_path)
+    return documents, known_files
+
+
+def _parent_area_mentions(body: str) -> list[tuple[str, str]]:
+    mentions: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r"\b(?:parent\s+)?(?P<kind>epic|domain)\s*:\s*(?P<name>[^\n.;]+)",
+        body,
+        re.IGNORECASE,
+    ):
+        root = "Epics" if match.group("kind").casefold() == "epic" else "Domains"
+        mentions.append((root, match.group("name").strip().casefold()))
+    return mentions
+
+
+def _relationship_issues_for_document(
+    config: Config,
+    document: Document,
+    known_files: set[str],
+    classification_by_path: dict[str, ScopeClassification],
+    area_scopes: dict[tuple[str, str], str],
+    project_names: list[str],
+) -> list[dict[str, Any]]:
+    classification = classification_by_path[document.relative_path]
+    links = _document_local_links(config, document, known_files)
+    linked_scopes = {
+        classification_by_path[link["resolved_target"]].scope.path
+        for link in links
+        if link["exists"] and link["resolved_target"] in classification_by_path
     }
-    area_names = {
-        classification.scope.display_name.split("/", 1)[1].casefold(): classification.scope.path
+    cross_scope_links = linked_scopes - {classification.scope.path}
+    issues: list[dict[str, Any]] = []
+
+    def add(kind: str, message: str, suggestion: str, **details: Any) -> None:
+        issues.append(
+            {
+                "kind": kind,
+                "path": document.relative_path,
+                "message": message,
+                "suggestion": suggestion,
+                **details,
+            }
+        )
+
+    for link in links:
+        if not link["exists"]:
+            add(
+                "unresolved_link",
+                f"Local Fundus link does not resolve: {link['target']}",
+                "Review or replace the unresolved link; do not rewrite it automatically.",
+                target=link["target"],
+                resolved_target=link["resolved_target"],
+            )
+
+    aliases = {alias.upper() for alias in frontmatter_list(document.frontmatter.get("aliases"))}
+    for ticket_id in extract_ticket_ids(document.body):
+        if ticket_id not in aliases:
+            add(
+                "weak_alias",
+                f"Ticket {ticket_id} appears in the note but is not an alias.",
+                f"Consider adding {ticket_id} as an alias through a revision-bound update proposal.",
+                ticket_id=ticket_id,
+            )
+
+    mentioned_cross_scope = False
+    for area_root, area_name in _parent_area_mentions(document.body):
+        target_scope = area_scopes.get((area_root, area_name))
+        if target_scope and target_scope != classification.scope.path:
+            mentioned_cross_scope = True
+            if target_scope not in linked_scopes:
+                add(
+                    "parent_mention_without_link",
+                    f"Named parent area has no Fundus link: {target_scope}",
+                    "Review the parent note and propose a direct link only when write intent covers both notes.",
+                    target_scope=target_scope,
+                )
+
+    if classification.scope.kind == "area":
+        for project_name in project_names:
+            if re.search(rf"(?<![\w-]){re.escape(project_name)}(?![\w-])", document.body, re.IGNORECASE):
+                mentioned_cross_scope = True
+                if project_name not in linked_scopes:
+                    add(
+                        "area_delivery_without_project_link",
+                        f"Area delivery names project '{project_name}' without linking a project note.",
+                        "Review the relevant project result and propose a link only if it adds navigational value.",
+                        target_scope=project_name,
+                    )
+
+    if mentioned_cross_scope and not cross_scope_links:
+        add(
+            "cross_scope_orphan",
+            "The note names another logical scope but has no resolved cross-scope Fundus link.",
+            "Use corpus search to identify at most the directly relevant counterpart before proposing a link.",
+        )
+    return issues
+
+
+def audit_relationships(config: Config) -> dict[str, Any]:
+    """Return deterministic cross-scope relationship suggestions without mutating the corpus."""
+    documents, known_files = _relationship_audit_documents(config)
+    classification_by_path = {
+        document.relative_path: classify_document_scope(config, document.path, document.frontmatter)
+        for document in documents
+    }
+    area_scopes = {
+        (
+            classification.scope.path.split("/", 1)[0],
+            classification.scope.display_name.split("/", 1)[1].casefold(),
+        ): classification.scope.path
         for classification in classification_by_path.values()
         if classification.scope.kind == "area"
     }
@@ -1892,87 +1997,18 @@ def audit_relationships(config: Config) -> dict[str, Any]:
             if classification.scope.kind == "project"
         }
     )
-    issues: list[dict[str, Any]] = []
-
-    def add(kind: str, doc: Document, message: str, suggestion: str, **details: Any) -> None:
-        issues.append(
-            {
-                "kind": kind,
-                "path": doc.relative_path,
-                "message": message,
-                "suggestion": suggestion,
-                **details,
-            }
+    issues = [
+        issue
+        for document in documents
+        for issue in _relationship_issues_for_document(
+            config,
+            document,
+            known_files,
+            classification_by_path,
+            area_scopes,
+            project_names,
         )
-
-    for doc in documents:
-        classification = classification_by_path[doc.relative_path]
-        links = _document_local_links(config, doc, known_files)
-        linked_scopes = {
-            classification_by_path[link["resolved_target"]].scope.path
-            for link in links
-            if link["exists"] and link["resolved_target"] in classification_by_path
-        }
-        cross_scope_links = {scope_path for scope_path in linked_scopes if scope_path != classification.scope.path}
-
-        for link in links:
-            if not link["exists"]:
-                add(
-                    "unresolved_link",
-                    doc,
-                    f"Local Fundus link does not resolve: {link['target']}",
-                    "Review or replace the unresolved link; do not rewrite it automatically.",
-                    target=link["target"],
-                    resolved_target=link["resolved_target"],
-                )
-
-        aliases = {alias.upper() for alias in frontmatter_list(doc.frontmatter.get("aliases"))}
-        for ticket_id in extract_ticket_ids(doc.body):
-            if ticket_id not in aliases:
-                add(
-                    "weak_alias",
-                    doc,
-                    f"Ticket {ticket_id} appears in the note but is not an alias.",
-                    f"Consider adding {ticket_id} as an alias through a revision-bound update proposal.",
-                    ticket_id=ticket_id,
-                )
-
-        mentioned_cross_scope = False
-        for match in re.finditer(r"\b(?:parent\s+)?(?:epic|domain)\s*:\s*([^\n.;]+)", doc.body, re.IGNORECASE):
-            name = match.group(1).strip().casefold()
-            target_scope = area_names.get(name)
-            if target_scope and target_scope != classification.scope.path:
-                mentioned_cross_scope = True
-                if target_scope not in linked_scopes:
-                    add(
-                        "parent_mention_without_link",
-                        doc,
-                        f"Named parent area has no Fundus link: {target_scope}",
-                        "Review the parent note and propose a direct link only when write intent covers both notes.",
-                        target_scope=target_scope,
-                    )
-
-        if classification.scope.kind == "area":
-            for project_name in project_names:
-                if re.search(rf"(?<![\w-]){re.escape(project_name)}(?![\w-])", doc.body, re.IGNORECASE):
-                    mentioned_cross_scope = True
-                    if project_name not in linked_scopes:
-                        add(
-                            "area_delivery_without_project_link",
-                            doc,
-                            f"Area delivery names project '{project_name}' without linking a project note.",
-                            "Review the relevant project result and propose a link only if it adds navigational value.",
-                            target_scope=project_name,
-                        )
-
-        if mentioned_cross_scope and not cross_scope_links:
-            add(
-                "cross_scope_orphan",
-                doc,
-                "The note names another logical scope but has no resolved cross-scope Fundus link.",
-                "Use corpus search to identify at most the directly relevant counterpart before proposing a link.",
-            )
-
+    ]
     issues.sort(key=lambda issue: (issue["path"], issue["kind"], str(issue.get("target_scope", "")), str(issue.get("target", ""))))
     return {
         "scope": "corpus",
